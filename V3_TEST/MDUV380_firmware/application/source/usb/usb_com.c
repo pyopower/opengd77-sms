@@ -1070,6 +1070,21 @@ void USB_DEBUG_PRINT(const char *str)
 	CDC_Transmit_FS((uint8_t *)usbComSendBuf, strlen((char *)usbComSendBuf));
 }
 
+// Non-blocking variant for bulk diagnostic dumps: returns false (and sends nothing) if the CDC IN endpoint is still busy,
+// so the caller can retry on its next tick instead of silently losing the line.
+extern USBD_HandleTypeDef hUsbDeviceFS;
+
+// True while a USB host has enumerated and configured the radio (cable plugged in), whether or not a terminal has the port open.
+bool USB_DEBUG_IsConnected(void)
+{
+	return (hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED);
+}
+
+bool USB_DEBUG_TryPrint(const char *str)
+{
+	return (CDC_Transmit_FS((uint8_t *)str, (uint16_t)strlen(str)) == USBD_OK);
+}
+
 void USB_DEBUG_printf(const char *format, ...)
 {
 	char buf[COM_BUFFER_SIZE];

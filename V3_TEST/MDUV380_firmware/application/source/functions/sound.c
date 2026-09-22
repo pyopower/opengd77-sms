@@ -392,6 +392,9 @@ bool soundRefillData(uint32_t bufNum)
 	else
 	{
 		memset(i2s_Tx_Buffer[bufNum], 0x00, (2 * (WAV_BUFFER_SIZE * sizeof(uint16_t))));
+#if DMR_RX_TRACE
+		hrc6000RxTraceUnderrun();
+#endif
 
 		soundResetDMRRxAGCGain();
 #if 0

@@ -1,0 +1,70 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "DM1701: Prepare (codec cleaner)",
+      "type": "shell",
+      "command": "prepare.bat",
+      "options": {
+        "cwd": "${workspaceFolder}/V3_TEST"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "DM1701: Clean Build",
+      "type": "shell",
+      "command": "\"C:/ST/STM32CubeIDE_2.1.0/STM32CubeIDE/stm32cubeidec.exe\" -nosplash -application org.eclipse.cdt.managedbuilder.core.headlessbuild -data \"${workspaceFolder}/.cubeide-workspace\" -import \"${workspaceFolder}/V3_TEST/MDUV380_firmware\" -cleanBuild \"MDUV380_firmware/DM1701_FW\"",
+      "dependsOn": ["DM1701: Prepare (codec cleaner)"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": {
+        "owner": "cpp",
+        "fileLocation": ["relative", "${workspaceFolder}/V3_TEST/MDUV380_firmware/DM1701_FW"],
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    },
+    {
+      "label": "DM1701: Open Output Folder",
+      "type": "shell",
+      "command": "explorer.exe",
+      "args": [
+        "${workspaceFolder}/V3_TEST/MDUV380_firmware/DM1701_FW"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "DM1701: List DFU Devices",
+      "type": "shell",
+      "command": "python opengd77_stm32_firmware_loader.py -l",
+      "options": {
+        "cwd": "${workspaceFolder}/V3_TEST/MDUV380_firmware/tools",
+        "env": {
+          "PATH": "C:/Users/ianti/AppData/Local/Programs/Python/Python314/Lib/site-packages/libusb/_platform/windows/x86_64;${env:PATH}"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "DM1701: Flash Firmware",
+      "type": "shell",
+      "command": "python opengd77_stm32_firmware_loader.py -m DM-1701 -f \"${workspaceFolder}/V3_TEST/MDUV380_firmware/DM1701_FW/OpenDM1701.bin\"",
+      "options": {
+        "cwd": "${workspaceFolder}/V3_TEST/MDUV380_firmware/tools",
+        "env": {
+          "PATH": "C:/Users/ianti/AppData/Local/Programs/Python/Python314/Lib/site-packages/libusb/_platform/windows/x86_64;${env:PATH}"
+        }
+      },
+      "dependsOn": ["DM1701: Clean Build"],
+      "problemMatcher": []
+    }
+  ]
+}

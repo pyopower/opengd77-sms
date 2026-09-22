@@ -328,6 +328,355 @@ volatile ticksTimer_t readDMRRSSITimer = { 0, 0 };
 volatile bool updateLastHeard = false;
 volatile int dmrMonitorCapturedTS = -1;
 
+// ------------------------------------------------------------------------------------------------
+// DMR RX trace: diagnostic for the "TG950 choppy audio" investigation (see INVESTIGATION_LOCAL_ONLY).
+// Logs every received DMR burst plus the audio-path decisions into a small ring buffer and prints a
+// per-call summary + the ring over USB serial AFTER the call has ended (never during the call), so the
+// serial traffic cannot disturb the receive path. Set DMR_RX_TRACE to 0 for a normal build.
+// v5: every call summary is also kept in a RAM history and printed (as "RXT HIST", with the age of the call)
+//     when USB is next connected, so the radio can be used for listening with no cable attached.
+// ------------------------------------------------------------------------------------------------
+// DMR_RX_TRACE is defined in HR-C6000.h (shared with sound.c for the underrun hook).
+#if DMR_RX_TRACE
+#define RXT_RING_COUNT       256U   // 8 bytes each, kept in CCM RAM
+#define RXT_HIST_COUNT        12U
+#define RXT_MIN_CALL_BURSTS   20U   // ignore anything shorter than about 1.2 s
+#define RXT_CALL_END_MS      700U
+
+typedef struct { uint16_t t; uint8_t ev; uint8_t a; uint8_t b; uint8_t c; uint8_t d; uint8_t e; } rxtEvent_t;
+
+typedef struct
+{
+	uint32_t endMs;
+	uint16_t call, durDs, burst, badCrc, dataInCall, bs, ms, acc;
+	uint16_t accSeq[6];
+	uint16_t decReal, silAbn, silIns, skipLim, limHit, abnInt, otherInt, underrun, resync, timeout, silRx, repRx;
+	uint16_t gap[7];
+	uint8_t wavMin, wavMax;
+} rxtHist_t;
+
+static __attribute__((section(".ccmram"))) rxtEvent_t rxtRing[RXT_RING_COUNT];
+static __attribute__((section(".ccmram"))) rxtHist_t rxtHist[RXT_HIST_COUNT];
+static volatile uint32_t rxtHead = 0;
+static volatile bool rxtActive = false;
+static volatile uint32_t rxtLastMs = 0;   // time of the last voice burst
+static volatile uint8_t rxtDumpState = 0;   // 0 idle, 1 summary, 4 summary2, 2 events, 3 end
+static uint32_t rxtDumpIdx = 0, rxtDumpEnd = 0, rxtCallNumber = 0;
+static uint32_t rxtHistWrite = 0, rxtHistSent = 0;   // monotonic counters; entry i lives in rxtHist[i % RXT_HIST_COUNT]
+static uint8_t rxtPrevFrame[9];
+
+static struct
+{
+	uint32_t startMs;
+	uint32_t burst, badCrc, badCrcSeq[8], dataInCall, bsSync, msSync;
+	uint32_t voiceAccepted, decodeReal, decodeSilAbn, decodeSilIns, decodeSkipped, limitHits;
+	uint32_t abnInt, abnMatched, otherInt, underrun, resync, timeout, silRx, repRx;
+	uint32_t gap[7];              // burst-to-burst spacing: <20, <45, <55, <66, <80, <130, >=130 ms
+	uint32_t seqAccepted[8];
+	uint8_t  wavMin, wavMax;
+	uint32_t lastBurstMs;
+} rxt;
+
+static inline uint16_t rxtSat16(uint32_t v)
+{
+	return (v > 0xFFFFU) ? 0xFFFFU : (uint16_t)v;
+}
+
+static inline void rxtLog(uint8_t ev, uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint8_t e)
+{
+	if (rxtDumpState != 0)
+	{
+		return; // ring is frozen while it is being printed
+	}
+
+	rxtEvent_t *p = &rxtRing[rxtHead & (RXT_RING_COUNT - 1U)];
+
+	p->t = (uint16_t)ticksGetMillis(); p->ev = ev; p->a = a; p->b = b; p->c = c; p->d = d; p->e = e;
+	rxtHead++;
+}
+
+static void rxtStartCall(void)
+{
+	memset(&rxt, 0, sizeof(rxt));
+	memset(rxtPrevFrame, 0, sizeof(rxtPrevFrame));
+	rxt.startMs = ticksGetMillis();
+	rxt.wavMin = 255;
+	rxtHead = 0;
+	rxtDumpState = 0;
+	rxtActive = true;
+}
+
+static inline void rxtNoteWav(void)
+{
+	uint8_t w = (uint8_t)wavbuffer_count;
+
+	if (w < rxt.wavMin) rxt.wavMin = w;
+	if (w > rxt.wavMax) rxt.wavMax = w;
+}
+
+// Called from the receive interrupt for every burst the HR-C6000 reports.
+static inline void rxtBurst(uint8_t r51, uint8_t r5f, int rxDataType, int rxSyncClass, bool crcOk)
+{
+	uint32_t now = ticksGetMillis();
+	uint8_t flags;
+	// Voice-like burst: not a data-sync burst, voice sequence 1..6 (the hotspot's constant idle bursts are data type 9).
+	bool voiceLike = (rxSyncClass != 2) && ((rxDataType & 7) >= 1) && ((rxDataType & 7) <= 6); // bit 3 of the type nibble is set on some receivers (e.g. 9..14)
+
+	if (hrc.transmissionEnabled)
+	{
+		return;
+	}
+
+	if (voiceLike)
+	{
+		rxtLastMs = now;
+	}
+
+	if ((rxtActive == false) || (voiceLike && (rxtDumpState != 0)))
+	{
+		if (voiceLike == false)
+		{
+			return; // a call starts on its first voice burst; idle/data bursts outside a call are not interesting
+		}
+		rxtStartCall(); // (also drops an unfinished print-out of the previous call when a new one begins)
+	}
+
+	if (rxt.burst > 0)
+	{
+		uint32_t d = now - rxt.lastBurstMs;
+		rxt.gap[(d < 20) ? 0 : (d < 45) ? 1 : (d < 55) ? 2 : (d < 66) ? 3 : (d < 80) ? 4 : (d < 130) ? 5 : 6]++;
+	}
+	rxt.lastBurstMs = now;
+	rxt.burst++;
+
+	if (crcOk == false)
+	{
+		rxt.badCrc++;
+		rxt.badCrcSeq[rxDataType & 7]++;
+	}
+	if (rxSyncClass == 2) rxt.dataInCall++;
+	if ((r5f & 3) == 1) rxt.bsSync++; else rxt.msSync++;
+	rxtNoteWav();
+
+	flags = (hrc.hasAbnormalExit ? 0x01 : 0) | (hrc.insertSilenceFrame ? 0x02 : 0) | (hrc.hasEncodedAudio ? 0x04 : 0) |
+			(hrc.ccHold ? 0x08 : 0) | ((currentRadioDevice->trxDMRModeRx == DMR_MODE_RMO) ? 0x10 : 0);
+	rxtLog('B', r51, r5f, (uint8_t)((slotState << 4) | ((hrc.tsAgreed > 15) ? 15 : hrc.tsAgreed)), flags, (uint8_t)wavbuffer_count);
+}
+
+static inline void rxtVoiceAccepted(int seq)
+{
+	if (rxtActive == false) return;
+	rxt.voiceAccepted++;
+	rxt.seqAccepted[seq & 7]++;
+
+	// The first AMBE frame of the burst: is it the codec "silence" frame (hotspot filling for lost network frames), or a repeat of the previous burst's?
+	if (memcmp((const void *)(DMR_frame_buffer + LC_DATA_LENGTH), SILENCE_AUDIO, sizeof(rxtPrevFrame)) == 0)
+	{
+		rxt.silRx++;
+	}
+	else if (memcmp((const void *)(DMR_frame_buffer + LC_DATA_LENGTH), rxtPrevFrame, sizeof(rxtPrevFrame)) == 0)
+	{
+		rxt.repRx++;
+	}
+	memcpy(rxtPrevFrame, (const void *)(DMR_frame_buffer + LC_DATA_LENGTH), sizeof(rxtPrevFrame));
+
+	rxtLog('V', (uint8_t)seq, (uint8_t)hrc.receivedFramesCount, hrc.insertSilenceFrame ? 1 : 0, hrc.hasAbnormalExit ? 1 : 0, (uint8_t)hrc.bufferLimitReachedCount);
+}
+
+static inline void rxtDecode(uint8_t code)   // 0 real, 1 silence(abnormal), 2 silence(inserted), 3 both, 4 skipped(buffer limit)
+{
+	if (rxtActive == false) return;
+
+	switch (code)
+	{
+		case 0: rxt.decodeReal++; break;
+		case 1: rxt.decodeSilAbn++; break;
+		case 2: rxt.decodeSilIns++; break;
+		case 3: rxt.decodeSilAbn++; rxt.decodeSilIns++; break;
+		default: rxt.decodeSkipped++; break;
+	}
+	rxtNoteWav();
+	rxtLog('D', code, (uint8_t)wavbuffer_count, (uint8_t)hrc.bufferLimitReachedCount, 0, 0);
+}
+
+static inline void rxtSimple(char ev, uint8_t a, uint8_t b, uint8_t c)
+{
+	if (rxtActive == false)
+	{
+		return;
+	}
+
+	switch (ev)
+	{
+		case 'A': rxt.abnInt++; if (c) rxt.abnMatched++; break;
+		case 'I': rxt.otherInt++; break;
+		case 'U': rxt.underrun++; break;
+		case 'R': if (a == 1) rxt.resync++; else rxt.timeout++; break;
+		case 'L': rxt.limitHits++; break;
+		default: break;
+	}
+	rxtLog(ev, a, b, c, 0, 0);
+}
+
+// Called from the audio DMA refill path when it had to play silence because no decoded audio was ready.
+void hrc6000RxTraceUnderrun(void)
+{
+	if (rxtActive && ((slotState == DMR_STATE_RX_1) || (slotState == DMR_STATE_RX_2)))
+	{
+		rxtSimple('U', (uint8_t)wavbuffer_count, 0, 0);
+	}
+}
+
+static void rxtStoreHistory(void)
+{
+	rxtHist_t *h = &rxtHist[rxtHistWrite % RXT_HIST_COUNT];
+
+	h->endMs = rxt.lastBurstMs;
+	h->call = (uint16_t)rxtCallNumber;
+	h->durDs = rxtSat16((rxt.lastBurstMs - rxt.startMs) / 100U);
+	h->burst = rxtSat16(rxt.burst); h->badCrc = rxtSat16(rxt.badCrc); h->dataInCall = rxtSat16(rxt.dataInCall);
+	h->bs = rxtSat16(rxt.bsSync); h->ms = rxtSat16(rxt.msSync); h->acc = rxtSat16(rxt.voiceAccepted);
+	for (int i = 0; i < 6; i++) h->accSeq[i] = rxtSat16(rxt.seqAccepted[i + 1]);
+	h->decReal = rxtSat16(rxt.decodeReal); h->silAbn = rxtSat16(rxt.decodeSilAbn); h->silIns = rxtSat16(rxt.decodeSilIns);
+	h->skipLim = rxtSat16(rxt.decodeSkipped); h->limHit = rxtSat16(rxt.limitHits); h->abnInt = rxtSat16(rxt.abnInt);
+	h->otherInt = rxtSat16(rxt.otherInt); h->underrun = rxtSat16(rxt.underrun); h->resync = rxtSat16(rxt.resync);
+	h->timeout = rxtSat16(rxt.timeout); h->silRx = rxtSat16(rxt.silRx); h->repRx = rxtSat16(rxt.repRx);
+	for (int i = 0; i < 7; i++) h->gap[i] = rxtSat16(rxt.gap[i]);
+	h->wavMin = rxt.wavMin; h->wavMax = rxt.wavMax;
+	rxtHistWrite++;
+}
+
+static void rxtTick(void)
+{
+	static char line[220];
+
+	if (rxtActive && (rxtDumpState == 0) && ((ticksGetMillis() - rxtLastMs) > RXT_CALL_END_MS))
+	{
+		if (rxt.burst >= RXT_MIN_CALL_BURSTS)
+		{
+			uint32_t n = (rxtHead > RXT_RING_COUNT) ? RXT_RING_COUNT : rxtHead;
+
+			rxtCallNumber++;
+			rxtStoreHistory();
+			if (USB_DEBUG_IsConnected())
+			{
+				// live: print this call now (its history entry is marked as already sent)
+				rxtHistSent = rxtHistWrite;
+				rxtDumpEnd = rxtHead;
+				rxtDumpIdx = rxtHead - n;
+				rxtDumpState = 1;
+			}
+			else
+			{
+				rxtActive = false; // nobody listening: the summary stays in the history for later
+			}
+		}
+		else
+		{
+			rxtActive = false;
+		}
+	}
+
+	if (rxtDumpState == 0)
+	{
+		// Backlog: when USB is connected, print history entries that were never sent
+		if (rxtActive == false)
+		{
+			if (rxtHistWrite - rxtHistSent > RXT_HIST_COUNT)
+			{
+				rxtHistSent = rxtHistWrite - RXT_HIST_COUNT;
+			}
+
+			if ((rxtHistSent != rxtHistWrite) && USB_DEBUG_IsConnected())
+			{
+				const rxtHist_t *h = &rxtHist[rxtHistSent % RXT_HIST_COUNT];
+
+				snprintf(line, sizeof(line),
+						"RXT HIST call=%u age_ms=%lu dur_ds=%u burst=%u badcrc=%u data=%u bs=%u ms=%u acc=%u accseq=%u,%u,%u,%u,%u,%u decReal=%u silAbn=%u silIns=%u skipLim=%u limHit=%u abnInt=%u otherInt=%u underrun=%u resync=%u timeout=%u silRx=%u repRx=%u wav=%u..%u gap=%u,%u,%u,%u,%u,%u,%u\r\n",
+						h->call, (unsigned long)(ticksGetMillis() - h->endMs), h->durDs, h->burst, h->badCrc, h->dataInCall, h->bs, h->ms, h->acc,
+						h->accSeq[0], h->accSeq[1], h->accSeq[2], h->accSeq[3], h->accSeq[4], h->accSeq[5],
+						h->decReal, h->silAbn, h->silIns, h->skipLim, h->limHit, h->abnInt, h->otherInt, h->underrun, h->resync, h->timeout, h->silRx, h->repRx,
+						(unsigned)h->wavMin, (unsigned)h->wavMax, h->gap[0], h->gap[1], h->gap[2], h->gap[3], h->gap[4], h->gap[5], h->gap[6]);
+				if (USB_DEBUG_TryPrint(line))
+				{
+					rxtHistSent++;
+				}
+			}
+		}
+		return;
+	}
+
+	if (rxtDumpState == 1)
+	{
+		snprintf(line, sizeof(line),
+				"RXT SUM call=%lu dur=%lu burst=%lu badcrc=%lu bcseq=%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu data=%lu bs=%lu ms=%lu acc=%lu accseq=%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\r\n",
+				rxtCallNumber, (rxt.lastBurstMs - rxt.startMs), rxt.burst, rxt.badCrc,
+				rxt.badCrcSeq[0], rxt.badCrcSeq[1], rxt.badCrcSeq[2], rxt.badCrcSeq[3], rxt.badCrcSeq[4], rxt.badCrcSeq[5], rxt.badCrcSeq[6], rxt.badCrcSeq[7],
+				rxt.dataInCall, rxt.bsSync, rxt.msSync, rxt.voiceAccepted,
+				rxt.seqAccepted[0], rxt.seqAccepted[1], rxt.seqAccepted[2], rxt.seqAccepted[3], rxt.seqAccepted[4], rxt.seqAccepted[5], rxt.seqAccepted[6], rxt.seqAccepted[7]);
+		if (USB_DEBUG_TryPrint(line))
+		{
+			rxtDumpState = 4;
+		}
+		return;
+	}
+
+	if (rxtDumpState == 4)
+	{
+		snprintf(line, sizeof(line),
+				"RXT SUM2 call=%lu decReal=%lu silAbn=%lu silIns=%lu skipLim=%lu limHit=%lu abnInt=%lu abnMatch=%lu otherInt=%lu underrun=%lu resync=%lu timeout=%lu silRx=%lu repRx=%lu wav=%u..%u gap=%lu,%lu,%lu,%lu,%lu,%lu,%lu\r\n",
+				rxtCallNumber, rxt.decodeReal, rxt.decodeSilAbn, rxt.decodeSilIns, rxt.decodeSkipped, rxt.limitHits, rxt.abnInt, rxt.abnMatched,
+				rxt.otherInt, rxt.underrun, rxt.resync, rxt.timeout, rxt.silRx, rxt.repRx, (unsigned)rxt.wavMin, (unsigned)rxt.wavMax,
+				rxt.gap[0], rxt.gap[1], rxt.gap[2], rxt.gap[3], rxt.gap[4], rxt.gap[5], rxt.gap[6]);
+		if (USB_DEBUG_TryPrint(line))
+		{
+			rxtDumpState = 2;
+		}
+		return;
+	}
+
+	if (rxtDumpState == 2)
+	{
+		int len = snprintf(line, sizeof(line), "RXT E %lu", rxtCallNumber);
+		uint32_t count = 0;
+
+		while ((count < 8U) && ((rxtDumpIdx + count) != rxtDumpEnd))
+		{
+			const rxtEvent_t *p = &rxtRing[(rxtDumpIdx + count) & (RXT_RING_COUNT - 1U)];
+
+			len += snprintf(line + len, sizeof(line) - len, " %04x%c%02x%02x%02x%02x%02x", p->t, (char)p->ev, p->a, p->b, p->c, p->d, p->e);
+			count++;
+		}
+
+		strcat(line, "\r\n");
+		if (USB_DEBUG_TryPrint(line))
+		{
+			rxtDumpIdx += count;
+			if (rxtDumpIdx == rxtDumpEnd)
+			{
+				rxtDumpState = 3;
+			}
+		}
+		return;
+	}
+
+	// state 3: finished
+	rxtActive = false;
+	rxtDumpState = 0;
+}
+#define RXT_BURST(r51, r5f, dt, sc, ok)   rxtBurst((r51), (r5f), (dt), (sc), (ok))
+#define RXT_VOICE(seq)                    rxtVoiceAccepted(seq)
+#define RXT_DECODE(code)                  rxtDecode(code)
+#define RXT_EVENT(ev, a, b, c)            rxtSimple((ev), (a), (b), (c))
+#define RXT_TICK()                        rxtTick()
+#else
+#define RXT_BURST(r51, r5f, dt, sc, ok)
+#define RXT_VOICE(seq)
+#define RXT_DECODE(code)
+#define RXT_EVENT(ev, a, b, c)
+#define RXT_TICK()
+#endif
+
 
 static bool hrc6000CallAcceptFilter(void);
 static void hrc6000SendPcOrTgLCHeader(void);
@@ -966,6 +1315,52 @@ static inline void hrc6000SysPostAccessInt(void)
 	}
 }
 
+// The HR-C6000 reports the EMB "privacy indicator" (PI) bit of each burst in register 0x51.
+// A genuinely encrypted call sets PI on all of the embedded voice bursts (B..F) of every superframe.
+// Some sources, notably repeater-originated calls relayed by FreeDMR (e.g. TG950), reach the radio through a hotspot with
+// invalid EMB fields that decode to PI=1 on just two bursts (C and D) of every superframe. Treating those as
+// encrypted dropped 2 of every 6 voice bursts = a rhythmic 120 ms mute every 360 ms (2.78 Hz).
+// So PI only counts as "private" once it is seen on 3 or more embedded bursts of the current superframe,
+// or was seen on 4 or more in the previous one.
+#define HRC6000_IGNORE_SPURIOUS_PI 1
+static bool hrc6000PrivacyIsEffective(int syncClass, int dataType, bool pi)
+{
+#if HRC6000_IGNORE_SPURIOUS_PI
+	static uint8_t piThisSuperframe = 0;
+	static uint8_t piPrevSuperframe = 0;
+
+	if (syncClass == SYNC_CLASS_DATA)
+	{
+		return pi;
+	}
+
+	dataType &= 0x07; // Bit 3 of the reg 0x51 type nibble is set on some receivers/slots; the voice sequence number is the low 3 bits (as in the accept path).
+
+	if (dataType == 0x01) // Burst A (voice sync) starts a new superframe
+	{
+		piPrevSuperframe = piThisSuperframe;
+		piThisSuperframe = 0;
+		return (pi && (piPrevSuperframe >= 4));
+	}
+
+	if (pi == false)
+	{
+		return false;
+	}
+
+	if ((dataType >= 0x02) && (dataType <= 0x06) && (piThisSuperframe < 255))
+	{
+		piThisSuperframe++;
+	}
+
+	return ((piThisSuperframe >= 3) || (piPrevSuperframe >= 4));
+#else
+	(void)syncClass;
+	(void)dataType;
+	return pi;
+#endif
+}
+
 static inline void hrc6000SysReceivedDataInt(void)
 {
 	/*
@@ -1001,7 +1396,7 @@ static inline void hrc6000SysReceivedDataInt(void)
 	rxDataType = (reg_0x51 >> 4) & 0x0F;//Data Type or Voice Frame sequence number
 	rxSyncClass = (reg_0x51 >> 0) & 0x03;//Received Sync Class  0=Sync Header 1=Voice 2=data 3=RC
 	hrc.rxCRCisValid = (((reg_0x51 >> 2) & 0x01) == 0);// CRC is OK if its 0
-	rxPrivacyIndicator = (reg_0x51 >> 3) & 0x01;
+	rxPrivacyIndicator = hrc6000PrivacyIsEffective(rxSyncClass, rxDataType, (((reg_0x51 >> 3) & 0x01) != 0)) ? 1 : 0;
 	isDataSyncFrame = (rxSyncClass == SYNC_CLASS_DATA);
 	isSmsDataFrame = (isDataSyncFrame && ((rxDataType == 0x06) || (rxDataType == 0x07) || (rxDataType == 0x08)));
 
@@ -1019,6 +1414,7 @@ static inline void hrc6000SysReceivedDataInt(void)
 	}
 
 	rxSyncType = (reg_0x5F & 0x03); //received Sync Type
+	RXT_BURST(reg_0x51, reg_0x5F, rxDataType, rxSyncClass, hrc.rxCRCisValid);
 
 	if (codeplugChannelGetFlag(currentChannelData, CHANNEL_FLAG_FORCE_DMO) == 0)
 	{
@@ -1261,6 +1657,7 @@ static inline void hrc6000SysReceivedDataInt(void)
 							}
 						}
 
+						RXT_VOICE(sequenceNumber);
 						// Tell foreground that there is audio to encode
 						// But not until we get a TS lock, there is no
 						// need to fill the audio buffer with garbage, hence
@@ -1307,6 +1704,7 @@ static inline void hrc6000SysReceivedInformationInt(void)
 static inline void hrc6000SysAbnormalExitInt(void)
 {
 	SPI0ReadPageRegByte(0x04, 0x98, &reg_0x98);
+	bool rxtAbnBefore = hrc.hasAbnormalExit;
 
 	/*
 		In DMR mode, the cause of the abnormality in DMR mode is the unexpected abnormal voice
@@ -1321,6 +1719,7 @@ static inline void hrc6000SysAbnormalExitInt(void)
 			hrc.hasAbnormalExit = true; // The next audio frame will be skipped.
 		}
 	}
+	RXT_EVENT('A', reg_0x98, reg_0x82, ((hrc.hasAbnormalExit && !rxtAbnBefore) ? 1 : 0));
 }
 
 static inline void hrc6000SysPhysicalLayerInt(void)
@@ -1510,6 +1909,11 @@ void hrc6000SysInterruptHandler(void)
 		}
 	}
 
+	if (reg82Result && (reg_0x82 & ~(SYS_INT_RECEIVED_DATA | SYS_INT_ABNORMAL_EXIT)))
+	{
+		RXT_EVENT('I', reg_0x82, reg0x52, 0);
+	}
+
 	SPI0WritePageRegByte(0x04, 0x83, reg_0x82);  // Clear all Interrupt flags set for this run
 }
 
@@ -1633,6 +2037,7 @@ void hrc6000TimeslotInterruptHandler(void)
 
 				if (hrc.tsDisagreed > TS_DISAGREE_THRESHOLD) // if we have had four disagrees then re-sync.
 				{
+					RXT_EVENT('R', 1, (uint8_t)hrc.tsAgreed, (uint8_t)slotState);
 					hrc.timeCode = receivedTimeCode;
 					hrc.tsDisagreed = 0;
 					hrc.tsAgreed = 0;
@@ -2414,6 +2819,7 @@ static void hrc6000ManageCCHoldState(void)
 
 static void hrc6000Tick(void)
 {
+	RXT_TICK();
 	hrc6000ManageCCHoldState();
 
 	if (hrc.transmissionEnabled && (hrc.isWaking == WAKING_MODE_NONE))
@@ -2511,6 +2917,7 @@ static void hrc6000Tick(void)
 
 			if (hrc.interruptTimeout == INTERRUPT_TIMEOUT)
 			{
+				RXT_EVENT('R', 2, 0, (uint8_t)slotState);
 				HRC6000InitDigital();// sets 	interruptTimeout=0;
 				HRC6000ClearActiveDMRID();
 				if (uiDataGlobal.displayQSOState != QSO_DISPLAY_DEFAULT_SCREEN)
@@ -2697,14 +3104,17 @@ static void hrc6000Tick(void)
 					if ((WAV_BUFFER_COUNT - wavbuffer_count) < 3) // If we're running low on audio decoding storage
 					{
 						hrc.bufferLimitReachedCount = 6; // cancels decoding of the next 6 buffers.
+						RXT_EVENT('L', (uint8_t)wavbuffer_count, 0, 0);
 					}
 
 					if (hrc.bufferLimitReachedCount > 0)
 					{
+						RXT_DECODE(4);
 						hrc.bufferLimitReachedCount--;
 					}
 					else
 					{
+						RXT_DECODE((hrc.hasAbnormalExit ? 1 : 0) | (hrc.insertSilenceFrame ? 2 : 0));
 						codecDecode((uint8_t *)((hrc.hasAbnormalExit || hrc.insertSilenceFrame) ? SILENCE_AUDIO : (DMR_frame_buffer + LC_DATA_LENGTH)), 3);
 					}
 				}
