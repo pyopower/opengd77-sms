@@ -110,7 +110,7 @@ bool HRC6000StartQueuedSMS(void);
 bool HRC6000IsSendingSMS(void);
 bool HRC6000IRQHandlerIsRunning(void);
 // TG950 choppy-audio investigation: per-call RX trace printed over USB serial after each call (see HR-C6000.c). 0 = compiled out.
-#define DMR_RX_TRACE 1
+#define DMR_RX_TRACE 0
 void hrc6000RxTraceUnderrun(void);
 bool HRC6000HasGotSync(void);
 bool HRC6000CCIsHeld(void);
