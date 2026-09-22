@@ -71,5 +71,7 @@ bool USB_DeviceIsResetting(void);
 
 void USB_DEBUG_PRINT(const char *str);
 void USB_DEBUG_printf(const char *format, ...) __attribute__((format(__printf__, 1, 2)));
+bool USB_DEBUG_TryPrint(const char *str);
+bool USB_DEBUG_IsConnected(void);
 
 #endif /* _OPENGD77_USB_COM_H_ */

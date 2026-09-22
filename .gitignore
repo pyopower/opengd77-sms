@@ -17,6 +17,15 @@ MDUV380_firmware/application/source/linkerdata/codec_bin_section_1.bin
 .metadata/
 Debug/
 Release/
+.cubeide-workspace/
+
+# Local DM1701 build output (was previously committed; untracked for local dev)
+V3_TEST/MDUV380_firmware/DM1701_FW/
+*.cyclo
+
+# Proprietary donor/official firmware (never redistribute)
+donor/
+*.donor.bin
 
 # macOS
 .DS_Store
@@ -24,12 +33,6 @@ Release/
 # Python
 __pycache__/
 *.pyc
-
-# STM32CubeIDE per-function complexity reports
-*.cyclo
-
-# Proprietary donor/official firmware (never redistribute)
-donor/
 
 # Local-only notes containing hotspot credentials and full replay-rig scripts (never commit)
 DOCUMENTATIE/hotspot_replay_rig_LOCAL_ONLY.md
