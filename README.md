@@ -50,6 +50,25 @@ Available build configurations:
 - `MDUV380_10W_PLUS_FW`
 - `JA_MDUV380_10W_PLUS_FW`
 
+## Build on Linux without STM32CubeIDE
+
+`build-tools/` builds any tree/configuration with the plain
+[Arm GNU toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) (tested 13.3.rel1),
+reading the flags from the project's `.cproject`:
+
+```sh
+cd V3_TEST && ./prepare && cd ..          # creates the empty codec placeholder (x86-64 tool)
+make -f build-tools/Makefile TREE=V3_TEST CONFIG=DM1701_FW \
+     CROSS=~/toolchains/arm-gnu-toolchain-13.3.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi- -j
+# -> V3_TEST/MDUV380_firmware/DM1701_FW/OpenDM1701.bin   (MDUV380_FW -> OpenMDUV380.bin, ...)
+```
+
+`V3_TEST` is the most complete tree (SMS + Call Alert / Radio Check / Status + FreeDMR audio fix).
+Flash the resulting `.bin` with the official OpenGD77 firmware loader, which adds the codec
+from your radio's original firmware.
+
+---
+
 ## License — **non-commercial only**
 
 The OpenGD77 source code is distributed under a **modified BSD-3-Clause
