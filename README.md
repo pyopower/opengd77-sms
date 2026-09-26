@@ -13,11 +13,12 @@ This repository continues the work of:
 - **RichardL007** ([iant-code/opengd77-dm1701-ci](https://github.com/iant-code/opengd77-dm1701-ci)):
   FreeDMR audio fix.
 
-It is a **clean copy**: the history was rewritten to drop build output and, above all, the
-AMBE codec binary (`codec_bin_section_1.bin`) and firmware images that embed it. The codec is
-DVSI's code and cannot be redistributed; as with official OpenGD77, every user extracts it from
-the original firmware of their own radio (`tools/codec_cleaner -C`, run by `prepare`/`prepare.bat`).
-**Please never commit it back** (the `.gitignore` blocks it).
+It is a **clean copy**: the history was rewritten to drop ~150 MB of STM32CubeIDE build output
+and prebuilt firmware images. (Checked: those images were already codec-cleaned and the committed
+`codec_bin_section_1.bin` was only the 0xFF placeholder that `codec_cleaner -C` creates, so no
+DVSI code was ever in them.) As with official OpenGD77, the AMBE codec is never distributed: the
+firmware loader takes it from the original firmware of each user's own radio. Please keep build
+output and codec files out of the repository (the `.gitignore` blocks them).
 
 Goals here: validate SMS end to end against ADN / hblink masters (unit data routing through
 the master, Motorola TMS and ETSI formats), fix what breaks on the way, and send fixes back upstream.
