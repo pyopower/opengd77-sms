@@ -1,0 +1,10 @@
+{
+ "version": "v0.1.0",
+ "commit": "2b379fe",
+ "files": {
+  "OpenDM1701.bin": "a52e1f00da7bed6cbc9dd6ec26d2c3ad5eaac5757a4a3f66742ddda2a24114e6",
+  "OpenMDUV380.bin": "f85dbe547e4349725841167fde498147f9f8bea745a00807b85ed35d6ba0843f",
+  "OpenMDUV380_10W_PLUS.bin": "9db917f9c54f4d40c028cbf4eeb7ca7842fb27781d11c3f1169594c4c9c7ea74",
+  "OpenRT84.bin": "5565a7858b181ad9c94e75588ef1c7874cb58f5ac72b06302289aa0b9a2b828c"
+ }
+}

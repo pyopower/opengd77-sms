@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>opengd77-sms flasher</title>
+<style>
+ :root{--bg:#fff;--fg:#111;--mut:#666;--line:#8886;--acc:#2563eb;--ok:#16a34a;--bad:#dc2626;--warn:#d97706;color-scheme:light}
+ @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111;--fg:#eee;--mut:#aaa;color-scheme:dark}}
+ :root[data-theme="dark"]{--bg:#111;--fg:#eee;--mut:#aaa;color-scheme:dark}
+ body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:0 auto;padding:16px;max-width:640px}
+ header{display:flex;align-items:center;justify-content:space-between;gap:.5rem}
+ h1{font-size:1.25rem;margin:.2rem 0} h2{font-size:1rem;margin:1.3rem 0 .3rem}
+ label{display:block;margin:.6rem 0 .25rem;font-weight:600}
+ select,input[type=file],button{width:100%;box-sizing:border-box;font-size:1rem;padding:.6rem;border-radius:8px;
+   border:1px solid var(--line);background:transparent;color:inherit}
+ select option{background:var(--bg);color:var(--fg)} #lang{width:auto;padding:.3rem .4rem;font-size:.9rem}
+ button{margin-top:.8rem;font-weight:700;cursor:pointer;background:var(--acc);color:#fff;border:0}
+ button:disabled{opacity:.45;cursor:default}
+ .hint{color:var(--mut);font-size:.88rem;margin:.3rem 0} .box{border:1px solid var(--line);border-radius:10px;padding:.8rem;margin:.8rem 0}
+ .disc{border:2px solid var(--warn)} .disc p{margin:.4rem 0;font-size:.9rem}
+ .res{margin-top:.8rem;padding:.7rem;border-radius:8px;border:1px solid var(--line);white-space:pre-wrap}
+ .ok{border-color:var(--ok)} .bad{border-color:var(--bad)} .hide{display:none}
+ progress{width:100%;height:1.1rem;margin-top:.8rem}
+ code{font-size:.85em} a{color:var(--acc)}
+</style></head><body>
+<header><h1>opengd77-sms &mdash; <span data-i18n="title"></span></h1>
+<select id="lang" aria-label="Language">
+ <option value="en">English</option><option value="es">Español</option><option value="pt">Português</option>
+ <option value="it">Italiano</option><option value="fr">Français</option>
+</select></header>
+<p class="hint"><span data-i18n="intro"></span> <b id="ver"></b> &middot;
+ <a href="https://github.com/pyopower/opengd77-sms">GitHub</a></p>
+
+<div class="box disc">
+ <b data-i18n="disc_title"></b>
+ <p data-i18n-html="disc1"></p><p data-i18n-html="disc2"></p><p data-i18n-html="disc3"></p>
+ <label style="font-weight:600"><input type="checkbox" id="agree" style="width:auto"> <span data-i18n="agree"></span></label>
+</div>
+
+<p class="res bad hide" id="nousb" data-i18n="nousb"></p>
+
+<h2 data-i18n="s1"></h2>
+<select id="model"></select>
+<p class="hint hide" id="untested" style="color:var(--warn)" data-i18n="untested"></p>
+
+<h2 data-i18n="s2"></h2>
+<input type="file" id="donor" accept=".bin">
+<p class="hint" data-i18n-html="donor_hint"></p>
+<p class="hint" id="donorres"></p>
+
+<h2 data-i18n="s3"></h2>
+<p class="hint" data-i18n-html="dfu_hint"></p>
+<button id="go" disabled data-i18n="go"></button>
+<progress id="prog" class="hide" max="1" value="0"></progress>
+<div id="res"></div>
+
+<details class="hint" style="margin-top:1.2rem"><summary data-i18n="help_t"></summary>
+<p data-i18n-html="help1"></p><p data-i18n-html="help2"></p></details>
+
+<script src="ciphers.js"></script>
+<script src="flasher.js"></script>
+<script>
+var I = {
+ en: {
+  title: "web flasher", intro: "Flash the opengd77-sms firmware (OpenGD77 with DMR SMS) from the browser. Version",
+  disc_title: "Read before flashing",
+  disc1: "This is an <b>unofficial, experimental (beta)</b> firmware, not made or supported by the OpenGD77 team. Flashing firmware always carries some risk. <b>You use this page and the firmware entirely at your own risk</b>; the authors accept no liability for damage to your radio, data loss, or any other consequence, and there is no warranty of any kind.",
+  disc2: "OpenGD77 licence: <b>non-commercial use only</b>. You are responsible for operating within your licence and your country's rules.",
+  disc3: "The AMBE codec is not included: it is taken, <b>in your browser</b>, from the MD-9600 firmware file you provide. Nothing is uploaded anywhere. Back up your radio first (channels, contacts, DMR ID database).",
+  agree: "I have read this and accept it", nousb: "This browser can't talk to USB devices (WebUSB). Use Chrome or Edge on a computer, or Chrome on Android with an OTG cable.",
+  s1: "1. Radio model", untested: "Built from the same code but not tested on this model yet.",
+  s2: "2. Codec donor: official MD-9600 firmware V26.45",
+  donor_hint: "The file <code>MD9600-CSV(2571V5)-V26.45.bin</code>, from the official TYT firmware zip (the same donor every OpenGD77 installation uses). Without it the radio works in FM only.",
+  donor_ok: "✔ Correct donor file.", donor_bad: "✖ This is not the MD-9600 V26.45 file (checksum mismatch).",
+  s3: "3. Radio in bootloader mode",
+  dfu_hint: "Radio off, USB cable connected. Hold <b>PTT</b> and the <b>upper side button</b> and switch the radio on: the LED blinks red/green. Then press the button below and pick <i>STM Device in DFU Mode</i>.",
+  go: "Flash", connecting: "Connecting to the radio...", prep: "Preparing the image...",
+  erasing: "Erasing...", writing: "Writing {pct}%...",
+  done: "✔ Done. The radio restarts with opengd77-sms {ver}. Check the version in the firmware info screen.",
+  fail: "✖ Flashing failed: {e}\nThe radio stays in bootloader mode: fix the problem and flash again (or flash the official firmware).",
+  fw_bad: "The downloaded firmware does not match its checksum; reload the page.",
+  help_t: "The radio is not listed / access denied",
+  help1: "<b>Windows</b>: the bootloader needs the WinUSB driver: install it for <i>STM Device in DFU Mode</i> with <a href=\"https://zadig.akeo.ie/\">Zadig</a>. <b>Linux</b>: give your user access to USB 0483:df11 (udev rule). <b>Android</b>: Chrome and a USB OTG adapter.",
+  help2: "To go back, flash the official OpenGD77 firmware the same way with its own tools. Channels and contacts are kept."
+ },
+ es: {
+  title: "flasheador web", intro: "Flashea el firmware opengd77-sms (OpenGD77 con SMS DMR) desde el navegador. Versión",
+  disc_title: "Lee esto antes de flashear",
+  disc1: "Es un firmware <b>no oficial y experimental (beta)</b>, que no hace ni mantiene el equipo de OpenGD77. Flashear un firmware siempre tiene algún riesgo. <b>Usas esta página y el firmware bajo tu entera responsabilidad</b>; los autores no se hacen responsables de daños en la radio, pérdida de datos ni ninguna otra consecuencia, y no hay garantía de ningún tipo.",
+  disc2: "Licencia de OpenGD77: <b>solo uso no comercial</b>. Eres responsable de operar dentro de tu licencia y de las normas de tu país.",
+  disc3: "El códec AMBE no va incluido: se toma, <b>en tu navegador</b>, del firmware del MD-9600 que tú aportas. No se sube nada a ningún sitio. Haz antes una copia de tu radio (canales, contactos, base de IDs).",
+  agree: "Lo he leído y lo acepto", nousb: "Este navegador no puede hablar con dispositivos USB (WebUSB). Usa Chrome o Edge en un ordenador, o Chrome en Android con cable OTG.",
+  s1: "1. Modelo de radio", untested: "Compilado del mismo código, pero aún sin probar en este modelo.",
+  s2: "2. Donante del códec: firmware oficial del MD-9600 V26.45",
+  donor_hint: "El fichero <code>MD9600-CSV(2571V5)-V26.45.bin</code>, del zip del firmware oficial de TYT (el mismo donante que usa cualquier instalación de OpenGD77). Sin él la radio solo funciona en FM.",
+  donor_ok: "✔ Fichero donante correcto.", donor_bad: "✖ No es el fichero del MD-9600 V26.45 (la suma de comprobación no coincide).",
+  s3: "3. Radio en modo cargador",
+  dfu_hint: "Radio apagada y con el cable USB conectado. Mantén pulsados el <b>PTT</b> y el <b>botón lateral superior</b> y enciéndela: el LED parpadea rojo y verde. Pulsa el botón de abajo y elige <i>STM Device in DFU Mode</i>.",
+  go: "Flashear", connecting: "Conectando con la radio...", prep: "Preparando la imagen...",
+  erasing: "Borrando...", writing: "Escribiendo {pct}%...",
+  done: "✔ Hecho. La radio se reinicia con opengd77-sms {ver}. Comprueba la versión en la pantalla de información del firmware.",
+  fail: "✖ Ha fallado el flasheo: {e}\nLa radio sigue en modo cargador: corrige el problema y vuelve a flashear (o pon el firmware oficial).",
+  fw_bad: "El firmware descargado no coincide con su suma de comprobación; recarga la página.",
+  help_t: "La radio no aparece / acceso denegado",
+  help1: "<b>Windows</b>: el cargador necesita el driver WinUSB: instálalo para <i>STM Device in DFU Mode</i> con <a href=\"https://zadig.akeo.ie/\">Zadig</a>. <b>Linux</b>: da acceso a tu usuario al USB 0483:df11 (regla udev). <b>Android</b>: Chrome y un adaptador USB OTG.",
+  help2: "Para volver atrás, flashea el firmware oficial de OpenGD77 igual, con sus herramientas. Los canales y contactos se conservan."
+ },
+ pt: {
+  title: "flasher web", intro: "Grava o firmware opengd77-sms (OpenGD77 com SMS DMR) a partir do navegador. Versão",
+  disc_title: "Lê antes de gravar",
+  disc1: "É um firmware <b>não oficial e experimental (beta)</b>, não feito nem suportado pela equipa do OpenGD77. Gravar firmware tem sempre algum risco. <b>Usas esta página e o firmware por tua inteira responsabilidade</b>; os autores não se responsabilizam por danos no rádio, perda de dados ou qualquer outra consequência, e não há qualquer garantia.",
+  disc2: "Licença do OpenGD77: <b>apenas uso não comercial</b>. És responsável por operar dentro da tua licença e das regras do teu país.",
+  disc3: "O codec AMBE não está incluído: é retirado, <b>no teu navegador</b>, do firmware do MD-9600 que forneces. Nada é enviado para lado nenhum. Faz primeiro uma cópia do teu rádio (canais, contactos, base de IDs).",
+  agree: "Li e aceito", nousb: "Este navegador não comunica com dispositivos USB (WebUSB). Usa o Chrome ou o Edge num computador, ou o Chrome no Android com cabo OTG.",
+  s1: "1. Modelo do rádio", untested: "Compilado a partir do mesmo código, mas ainda não testado neste modelo.",
+  s2: "2. Dador do codec: firmware oficial do MD-9600 V26.45",
+  donor_hint: "O ficheiro <code>MD9600-CSV(2571V5)-V26.45.bin</code>, do zip do firmware oficial da TYT (o mesmo dador que qualquer instalação do OpenGD77 usa). Sem ele o rádio só funciona em FM.",
+  donor_ok: "✔ Ficheiro dador correto.", donor_bad: "✖ Não é o ficheiro do MD-9600 V26.45 (a soma de verificação não coincide).",
+  s3: "3. Rádio em modo bootloader",
+  dfu_hint: "Rádio desligado, com o cabo USB ligado. Mantém premidos o <b>PTT</b> e o <b>botão lateral superior</b> e liga o rádio: o LED pisca vermelho e verde. Depois carrega no botão abaixo e escolhe <i>STM Device in DFU Mode</i>.",
+  go: "Gravar", connecting: "A ligar ao rádio...", prep: "A preparar a imagem...",
+  erasing: "A apagar...", writing: "A escrever {pct}%...",
+  done: "✔ Feito. O rádio reinicia com o opengd77-sms {ver}. Verifica a versão no ecrã de informação do firmware.",
+  fail: "✖ A gravação falhou: {e}\nO rádio continua em modo bootloader: corrige o problema e grava de novo (ou grava o firmware oficial).",
+  fw_bad: "O firmware descarregado não coincide com a sua soma de verificação; recarrega a página.",
+  help_t: "O rádio não aparece / acesso negado",
+  help1: "<b>Windows</b>: o bootloader precisa do driver WinUSB: instala-o para <i>STM Device in DFU Mode</i> com o <a href=\"https://zadig.akeo.ie/\">Zadig</a>. <b>Linux</b>: dá ao teu utilizador acesso ao USB 0483:df11 (regra udev). <b>Android</b>: Chrome e um adaptador USB OTG.",
+  help2: "Para voltar atrás, grava o firmware oficial do OpenGD77 da mesma forma, com as suas ferramentas. Os canais e contactos mantêm-se."
+ },
+ it: {
+  title: "flasher web", intro: "Scrivi il firmware opengd77-sms (OpenGD77 con SMS DMR) dal browser. Versione",
+  disc_title: "Leggi prima di scrivere il firmware",
+  disc1: "È un firmware <b>non ufficiale e sperimentale (beta)</b>, non realizzato né supportato dal team di OpenGD77. Scrivere un firmware comporta sempre qualche rischio. <b>Usi questa pagina e il firmware a tuo esclusivo rischio</b>; gli autori non rispondono di danni alla radio, perdita di dati o qualsiasi altra conseguenza, e non c'è alcuna garanzia.",
+  disc2: "Licenza di OpenGD77: <b>solo uso non commerciale</b>. Sei responsabile di operare secondo la tua licenza e le norme del tuo paese.",
+  disc3: "Il codec AMBE non è incluso: viene preso, <b>nel tuo browser</b>, dal firmware dell'MD-9600 che fornisci tu. Non viene caricato nulla da nessuna parte. Fai prima una copia della radio (canali, contatti, database degli ID).",
+  agree: "Ho letto e accetto", nousb: "Questo browser non può comunicare con dispositivi USB (WebUSB). Usa Chrome o Edge su un computer, oppure Chrome su Android con un cavo OTG.",
+  s1: "1. Modello di radio", untested: "Compilato dallo stesso codice, ma non ancora provato su questo modello.",
+  s2: "2. Donatore del codec: firmware ufficiale MD-9600 V26.45",
+  donor_hint: "Il file <code>MD9600-CSV(2571V5)-V26.45.bin</code>, dallo zip del firmware ufficiale TYT (lo stesso donatore di ogni installazione OpenGD77). Senza di esso la radio funziona solo in FM.",
+  donor_ok: "✔ File donatore corretto.", donor_bad: "✖ Non è il file dell'MD-9600 V26.45 (checksum diverso).",
+  s3: "3. Radio in modalità bootloader",
+  dfu_hint: "Radio spenta, cavo USB collegato. Tieni premuti il <b>PTT</b> e il <b>tasto laterale superiore</b> e accendi la radio: il LED lampeggia rosso e verde. Poi premi il pulsante qui sotto e scegli <i>STM Device in DFU Mode</i>.",
+  go: "Scrivi il firmware", connecting: "Connessione alla radio...", prep: "Preparazione dell'immagine...",
+  erasing: "Cancellazione...", writing: "Scrittura {pct}%...",
+  done: "✔ Fatto. La radio si riavvia con opengd77-sms {ver}. Controlla la versione nella schermata delle informazioni del firmware.",
+  fail: "✖ Scrittura non riuscita: {e}\nLa radio resta in modalità bootloader: correggi il problema e riprova (oppure scrivi il firmware ufficiale).",
+  fw_bad: "Il firmware scaricato non corrisponde al suo checksum; ricarica la pagina.",
+  help_t: "La radio non compare / accesso negato",
+  help1: "<b>Windows</b>: il bootloader richiede il driver WinUSB: installalo per <i>STM Device in DFU Mode</i> con <a href=\"https://zadig.akeo.ie/\">Zadig</a>. <b>Linux</b>: dai al tuo utente accesso all'USB 0483:df11 (regola udev). <b>Android</b>: Chrome e un adattatore USB OTG.",
+  help2: "Per tornare indietro, scrivi allo stesso modo il firmware ufficiale di OpenGD77 con i suoi strumenti. Canali e contatti vengono conservati."
+ },
+ fr: {
+  title: "flasheur web", intro: "Flashe le firmware opengd77-sms (OpenGD77 avec SMS DMR) depuis le navigateur. Version",
+  disc_title: "À lire avant de flasher",
+  disc1: "C'est un firmware <b>non officiel et expérimental (bêta)</b>, ni fait ni pris en charge par l'équipe OpenGD77. Flasher un firmware comporte toujours un risque. <b>Tu utilises cette page et le firmware à tes propres risques</b> ; les auteurs déclinent toute responsabilité pour les dommages à ta radio, la perte de données ou toute autre conséquence, et il n'y a aucune garantie.",
+  disc2: "Licence OpenGD77 : <b>usage non commercial uniquement</b>. Tu es responsable d'opérer dans le cadre de ta licence et des règles de ton pays.",
+  disc3: "Le codec AMBE n'est pas inclus : il est pris, <b>dans ton navigateur</b>, dans le firmware du MD-9600 que tu fournis. Rien n'est envoyé nulle part. Sauvegarde d'abord ta radio (canaux, contacts, base d'ID).",
+  agree: "J'ai lu et j'accepte", nousb: "Ce navigateur ne peut pas communiquer avec des appareils USB (WebUSB). Utilise Chrome ou Edge sur un ordinateur, ou Chrome sur Android avec un câble OTG.",
+  s1: "1. Modèle de radio", untested: "Compilé à partir du même code, mais pas encore testé sur ce modèle.",
+  s2: "2. Donneur du codec : firmware officiel du MD-9600 V26.45",
+  donor_hint: "Le fichier <code>MD9600-CSV(2571V5)-V26.45.bin</code>, issu du zip du firmware officiel TYT (le même donneur que toute installation OpenGD77). Sans lui, la radio ne fonctionne qu'en FM.",
+  donor_ok: "✔ Fichier donneur correct.", donor_bad: "✖ Ce n'est pas le fichier du MD-9600 V26.45 (somme de contrôle différente).",
+  s3: "3. Radio en mode bootloader",
+  dfu_hint: "Radio éteinte, câble USB branché. Maintiens le <b>PTT</b> et le <b>bouton latéral supérieur</b> et allume la radio : la LED clignote rouge et vert. Puis appuie sur le bouton ci-dessous et choisis <i>STM Device in DFU Mode</i>.",
+  go: "Flasher", connecting: "Connexion à la radio...", prep: "Préparation de l'image...",
+  erasing: "Effacement...", writing: "Écriture {pct} %...",
+  done: "✔ Terminé. La radio redémarre avec opengd77-sms {ver}. Vérifie la version dans l'écran d'informations du firmware.",
+  fail: "✖ Le flashage a échoué : {e}\nLa radio reste en mode bootloader : corrige le problème et recommence (ou flashe le firmware officiel).",
+  fw_bad: "Le firmware téléchargé ne correspond pas à sa somme de contrôle ; recharge la page.",
+  help_t: "La radio n'apparaît pas / accès refusé",
+  help1: "<b>Windows</b> : le bootloader a besoin du pilote WinUSB : installe-le pour <i>STM Device in DFU Mode</i> avec <a href=\"https://zadig.akeo.ie/\">Zadig</a>. <b>Linux</b> : donne à ton utilisateur l'accès à l'USB 0483:df11 (règle udev). <b>Android</b> : Chrome et un adaptateur USB OTG.",
+  help2: "Pour revenir en arrière, flashe de la même façon le firmware officiel d'OpenGD77 avec ses outils. Les canaux et contacts sont conservés."
+ }
+};
+var $=function(i){return document.getElementById(i)}, L="en", donor=null, manifest=null;
+function T(k,p){ var s=(I[L]&&I[L][k])||I.en[k]||k; for(var n in (p||{})) s=s.split("{"+n+"}").join(p[n]); return s; }
+function applyLang(l){ L=I[l]?l:"en"; document.documentElement.lang=L; $("lang").value=L;
+  document.querySelectorAll("[data-i18n]").forEach(function(e){ e.textContent=T(e.getAttribute("data-i18n")); });
+  document.querySelectorAll("[data-i18n-html]").forEach(function(e){ e.innerHTML=T(e.getAttribute("data-i18n-html")); });
+  try{localStorage.setItem("og77sms_lang",L);}catch(e){} }
+var l0=null; try{l0=localStorage.getItem("og77sms_lang");}catch(e){}
+applyLang(l0 || (navigator.language||"en").slice(0,2).toLowerCase());
+$("lang").onchange=function(){ applyLang(this.value); };
+Object.keys(MODELS).forEach(function(k){ var o=document.createElement("option"); o.value=k; o.textContent=k; $("model").appendChild(o); });
+function res(ok,txt){ $("res").className="res "+(ok?"ok":"bad"); $("res").textContent=txt; }
+function ready(){ $("go").disabled = !($("agree").checked && donor && manifest && navigator.usb); }
+$("model").onchange=function(){ $("untested").classList.toggle("hide", MODELS[this.value].tested); };
+$("agree").onchange=ready;
+if (!navigator.usb) $("nousb").classList.remove("hide");
+fetch("firmware/manifest.json",{cache:"no-store"}).then(function(r){return r.json();}).then(function(m){
+  manifest=m; $("ver").textContent=m.version+" ("+m.commit+")"; ready(); });
+$("donor").onchange=async function(){
+  donor=null; var f=this.files[0]; if(!f) return ready();
+  var b=new Uint8Array(await f.arrayBuffer());
+  if (await sha256Hex(b) === DONOR_SHA256){ donor=b; $("donorres").textContent=T("donor_ok"); $("donorres").style.color="var(--ok)"; }
+  else { $("donorres").textContent=T("donor_bad"); $("donorres").style.color="var(--bad)"; }
+  ready(); };
+$("go").onclick=async function(){
+  var model=MODELS[$("model").value]; $("go").disabled=true; $("prog").classList.remove("hide"); $("prog").value=0;
+  var dfu=null;
+  try {
+    res(true,T("connecting")); dfu = await Dfu.request();
+    res(true,T("prep"));
+    var fw=new Uint8Array(await (await fetch("firmware/"+model.file,{cache:"no-store"})).arrayBuffer());
+    if (await sha256Hex(fw) !== manifest.files[model.file]) throw new Error(T("fw_bad"));
+    var image=prepareImage(fw, donor, model.cipher());
+    await dfu.flash(image, function(frac,stage){ $("prog").value=frac;
+      res(true, stage==="erase" ? T("erasing") : T("writing",{pct:Math.round(frac*100)})); });
+    $("prog").value=1; res(true,T("done",{ver:manifest.version}));
+  } catch(e) {
+    if (e && e.name==="NotFoundError") res(false, T("dfu_hint").replace(/<[^>]+>/g,""));
+    else res(false, T("fail",{e:(e&&e.message)||e}));
+  } finally { ready(); }
+};
+</script></body></html>

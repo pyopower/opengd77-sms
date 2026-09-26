@@ -57,3 +57,5 @@ codec_bin_section_*.bin
 **/MDUV380_firmware/*_FW/
 **/MD9600_firmware/MD9600_HW_V*/
 .headless-workspace/
+# ...except the web flasher's release images: built with codec_cleaner -i, verified codec-free
+!docs/flasher/firmware/*.bin

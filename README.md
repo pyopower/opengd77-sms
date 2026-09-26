@@ -20,6 +20,9 @@ DVSI code was ever in them.) As with official OpenGD77, the AMBE codec is never 
 firmware loader takes it from the original firmware of each user's own radio. Please keep build
 output and codec files out of the repository (the `.gitignore` blocks them).
 
+**Web flasher** (Chrome/Edge, or Chrome on Android with OTG): https://pyopower.github.io/opengd77-sms/
+— the AMBE codec is taken in your browser from the MD-9600 donor firmware you provide; nothing is uploaded.
+
 Goals here: validate SMS end to end against ADN / hblink masters (unit data routing through
 the master, Motorola TMS and ETSI formats), fix what breaks on the way, and send fixes back upstream.
 
