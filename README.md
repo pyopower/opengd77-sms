@@ -1,4 +1,30 @@
-﻿# opengd77-sms-experiment
+# opengd77-sms
+
+OpenGD77 firmware for the STM32 radios (TYT MD-UV380/390, Baofeng DM-1701, Retevis RT-3S/RT-84,
+MD-9600) **with DMR SMS**, aimed at working reliably through HomeBrew/OpenBridge masters
+(ADN, hblink, FreeDMR) and not only radio-to-radio.
+
+This repository continues the work of:
+
+- **PD0FR**, who wrote the SMS implementation
+  ([OpenGD77 forum thread](https://opengd77.org/viewtopic.php?t=45));
+- **868meshbot** ([868meshbot/opengd77-dm1701-ci](https://github.com/868meshbot/opengd77-dm1701-ci)):
+  network-relayed decoding, rate 3/4 fix, send-format choice, Call Alert / Radio Check / Status;
+- **RichardL007** ([iant-code/opengd77-dm1701-ci](https://github.com/iant-code/opengd77-dm1701-ci)):
+  FreeDMR audio fix.
+
+It is a **clean copy**: the history was rewritten to drop build output and, above all, the
+AMBE codec binary (`codec_bin_section_1.bin`) and firmware images that embed it. The codec is
+DVSI's code and cannot be redistributed; as with official OpenGD77, every user extracts it from
+the original firmware of their own radio (`tools/codec_cleaner -C`, run by `prepare`/`prepare.bat`).
+**Please never commit it back** (the `.gitignore` blocks it).
+
+Goals here: validate SMS end to end against ADN / hblink masters (unit data routing through
+the master, Motorola TMS and ETSI formats), fix what breaks on the way, and send fixes back upstream.
+
+---
+
+# opengd77-sms-experiment
 
 This workspace contains an STM32CubeIDE project for the UV390/MDUV380 OpenGD77 firmware.
 
