@@ -135,6 +135,7 @@ static smsViewSource_t smsViewSource = SMS_VIEW_SOURCE_RX_POPUP;
 static smsInboxMessage_t smsViewInboxMessage;
 static uint8_t smsViewMessageIndex = 0U;
 static char smsViewPeerText[24];
+static char smsViewTimeText[16]; // when an inbox message arrived (see smsFormatMessageTime), "" if unknown
 static uint8_t smsViewTopLine = 0U;
 static bool smsComposeHasPreset = false;
 static smsQuickTextEditMode_t smsQuickTextEditMode = SMS_QUICKTEXT_EDIT_NONE;
@@ -489,6 +490,15 @@ static bool smsLoadInboxViewMessage(uint8_t index)
 
 	smsViewSource = SMS_VIEW_SOURCE_INBOX;
 	smsViewMessageIndex = index;
+	{
+		smsMessageTime_t messageTime;
+
+		smsViewTimeText[0] = 0;
+		if (smsGetInboxMessageTime(index, &messageTime))
+		{
+			smsFormatMessageTime(&messageTime, smsViewTimeText, sizeof(smsViewTimeText));
+		}
+	}
 	smsViewTopLine = 0U;
 	smsGetSourceDisplayText(smsViewInboxMessage.sourceId, source, sizeof(source));
 	snprintf(smsViewPeerText, sizeof(smsViewPeerText), "From: %s", source);
@@ -508,6 +518,7 @@ static bool smsLoadSentViewMessage(uint8_t index)
 	smsViewMessageIndex = index;
 	smsViewTopLine = 0U;
 	snprintf(smsViewPeerText, sizeof(smsViewPeerText), "To: %u", message.destinationId);
+	smsViewTimeText[0] = 0;
 	return true;
 }
 
@@ -884,7 +895,8 @@ static void smsViewRender(void)
 	}
 
 	displayClearBuf();
-	menuDisplayTitle("SMS VIEW");
+	// The title shows when the message arrived, if known: the text itself no longer carries it.
+	menuDisplayTitle(((smsViewSource == SMS_VIEW_SOURCE_INBOX) && (smsViewTimeText[0] != 0)) ? smsViewTimeText : "SMS VIEW");
 	displayThemeApply(THEME_ITEM_FG_MENU_ITEM, THEME_ITEM_BG);
 	displayPrintAt(DISPLAY_X_POS_MENU_TEXT_OFFSET, DISPLAY_Y_POS_MENU_START, smsViewPeerText, FONT_SIZE_1);
 

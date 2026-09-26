@@ -25,6 +25,7 @@
  */
 
 #include <string.h>
+#include <stdio.h>
 #include <stddef.h>
 
 #include "functions/sms.h"
@@ -33,6 +34,8 @@
 #include "functions/trx.h"
 #include "hardware/HR-C6000.h"
 #include "hardware/EEPROM.h"
+#include "user_interface/uiGlobals.h"
+#include "user_interface/uiUtilities.h"
 
 // Dumps SMS TX/RX payload bytes and decode results over the USB CDC debug serial port
 // (USB_DEBUG_printf). Off by default -- flip to 1 to bring it back for wire-format debugging
@@ -44,7 +47,7 @@
 
 #define SMS_STORAGE_ADDRESS                    0x0F0000
 #define SMS_STORAGE_MAGIC                      0x534D5349U
-#define SMS_STORAGE_VERSION                    5U
+#define SMS_STORAGE_VERSION                    6U  // 6: + inboxTimes after the quick texts
 #define SMS_LEGACY_TEXT_LENGTH                 64U
 #define SMS_STORAGE_DEBOUNCE_MS                1500U
 #define SMS_TX_START_TIMEOUT_MS                4000U
@@ -77,6 +80,7 @@ typedef struct
 	smsInboxMessage_t inboxMessages[SMS_INBOX_MAX_MESSAGES];
 	smsSentMessage_t sentMessages[SMS_SENT_MAX_MESSAGES];
 	smsQuickTextMessage_t quickTextMessages[SMS_QUICKTEXT_MAX_MESSAGES];
+	smsMessageTime_t inboxTimes[SMS_INBOX_MAX_MESSAGES];
 } smsStorage_t;
 
 typedef struct
@@ -277,6 +281,7 @@ static bool smsStorageWriteCurrent(smsStorage_t *storage);
 static void smsStorageBuildSnapshot(smsStorage_t *storage);
 static bool smsStoragePersist(void);
 static void smsStorageLoad(void);
+static bool smsStorageZeroInboxTimes(void);
 static bool smsShouldAckUndecodedPayload(const uint8_t *payload, uint16_t totalLength, uint8_t padOctets);
 static bool smsDecodeCurrentRxBuffers(const uint8_t *payload, uint16_t totalLength, uint8_t padOctets, uint32_t sourceId);
 static void smsProcessPendingRxDecode(void);
@@ -658,6 +663,37 @@ static void smsStorageLoad(void)
 		return;
 	}
 
+	// Version 5 is version 6 without the inboxTimes table at the end: keep every message, the
+	// old ones just have no time.
+	if (EEPROM_Read(SMS_STORAGE_ADDRESS, (uint8_t *)&header, (int)sizeof(header)) &&
+		(header.magic == SMS_STORAGE_MAGIC) &&
+		(header.version == 5U) &&
+		(header.inboxCount <= SMS_INBOX_MAX_MESSAGES) &&
+		(header.sentCount <= SMS_SENT_MAX_MESSAGES) &&
+		(header.quickTextCount <= SMS_QUICKTEXT_MAX_MESSAGES) &&
+		smsStorageChecksumFromEeprom(SMS_STORAGE_ADDRESS,
+			(uint32_t)offsetof(smsStorage_t, inboxTimes),
+			(uint32_t)offsetof(smsStorage_t, checksum),
+			&checksum) &&
+		(header.checksum == checksum))
+	{
+		header.version = SMS_STORAGE_VERSION;
+		if (smsStorageZeroInboxTimes() && smsStorageWriteHeader(&header) && smsStorageUpdateChecksum())
+		{
+			inboxCount = (uint8_t)header.inboxCount;
+			sentCount = (uint8_t)header.sentCount;
+			quickTextCount = (uint8_t)header.quickTextCount;
+			inboxUnreadNotification = false;
+			return;
+		}
+
+		inboxCount = 0U;
+		sentCount = 0U;
+		quickTextCount = 0U;
+		inboxUnreadNotification = false;
+		return;
+	}
+
 	if (EEPROM_Read(SMS_STORAGE_ADDRESS, (uint8_t *)&header, (int)sizeof(header)) &&
 		(header.magic == SMS_STORAGE_MAGIC) &&
 		(header.version == 4U) &&
@@ -748,7 +784,7 @@ static void smsStorageLoad(void)
 
 		if (migrationOk)
 		{
-			migrationOk = smsStorageUpdateChecksum();
+			migrationOk = smsStorageZeroInboxTimes() && smsStorageUpdateChecksum();
 		}
 
 		if (migrationOk)
@@ -817,7 +853,7 @@ static void smsStorageLoad(void)
 
 			if (migrationOk)
 			{
-				migrationOk = smsStorageUpdateChecksum();
+				migrationOk = smsStorageZeroInboxTimes() && smsStorageUpdateChecksum();
 			}
 
 			if (migrationOk)
@@ -927,8 +963,85 @@ static bool __attribute__((unused)) smsMapUnicodeToDisplay(uint8_t high, uint8_t
 	return false;
 }
 
+static uint32_t smsInboxTimeAddress(uint8_t index)
+{
+	return (uint32_t)(SMS_STORAGE_ADDRESS + offsetof(smsStorage_t, inboxTimes) + ((uint32_t)index * sizeof(smsMessageTime_t)));
+}
+
+static bool smsStorageZeroInboxTimes(void)
+{
+	smsMessageTime_t emptyTime;
+
+	memset(&emptyTime, 0, sizeof(emptyTime));
+	for (uint8_t i = 0U; i < SMS_INBOX_MAX_MESSAGES; i++)
+	{
+		if (!EEPROM_Write((int32_t)smsInboxTimeAddress(i), (uint8_t *)&emptyTime, (int)sizeof(emptyTime)))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static bool smsParseTwoDigits(const char *p, uint8_t minValue, uint8_t maxValue, uint8_t *value)
+{
+	if ((p[0] < '0') || (p[0] > '9') || (p[1] < '0') || (p[1] > '9'))
+	{
+		return false;
+	}
+
+	*value = (uint8_t)(((p[0] - '0') * 10) + (p[1] - '0'));
+	return ((*value >= minValue) && (*value <= maxValue));
+}
+
+// A sender stamp "[DD/MM HH:MM] " at the very start of the text: fill messageTime and return the
+// text after it, so the time is shown once (from the sender, whose clock is usually better than
+// an unset radio clock) and not also inside the message.
+static const char *smsTakeSenderTime(const char *text, smsMessageTime_t *messageTime)
+{
+	smsMessageTime_t t;
+
+	memset(&t, 0, sizeof(t));
+	if ((strlen(text) < 15U) || (text[0] != '[') || (text[3] != '/') || (text[6] != ' ') ||
+		(text[9] != ':') || (text[12] != ']') || (text[13] != ' ') ||
+		!smsParseTwoDigits(&text[1], 1U, 31U, &t.day) || !smsParseTwoDigits(&text[4], 1U, 12U, &t.month) ||
+		!smsParseTwoDigits(&text[7], 0U, 23U, &t.hour) || !smsParseTwoDigits(&text[10], 0U, 59U, &t.minute))
+	{
+		return NULL;
+	}
+
+	t.source = SMS_TIME_SENDER;
+	*messageTime = t;
+	return &text[14];
+}
+
+// Otherwise the radio clock, but only if it looks set (a year before 2025 means it never was).
+static void smsRadioTime(smsMessageTime_t *messageTime)
+{
+	const time_t_custom earliestPlausible = 1735689600U; // 2025-01-01 00:00:00 UTC
+	time_t_custom t = uiDataGlobal.dateTimeSecs;
+	struct tm tmBuf;
+
+	memset(messageTime, 0, sizeof(*messageTime));
+	if (t < earliestPlausible)
+	{
+		return;
+	}
+
+	t += ((nonVolatileSettings.timezone & 0x80) ? ((nonVolatileSettings.timezone & 0x7F) - 64) * (15 * 60) : 0);
+	gmtime_r_Custom(&t, &tmBuf);
+	messageTime->source = SMS_TIME_RADIO;
+	messageTime->day = (uint8_t)tmBuf.tm_mday;
+	messageTime->month = (uint8_t)(tmBuf.tm_mon + 1);
+	messageTime->hour = (uint8_t)tmBuf.tm_hour;
+	messageTime->minute = (uint8_t)tmBuf.tm_min;
+}
+
 static void smsStoreInboxMessage(uint32_t sourceId, const char *text)
 {
+	smsMessageTime_t newTime;
+	smsMessageTime_t shiftedTime;
 	smsStorageHeader_t header;
 	smsInboxMessage_t shiftedMessage;
 	smsInboxMessage_t newMessage;
@@ -938,6 +1051,19 @@ static void smsStoreInboxMessage(uint32_t sourceId, const char *text)
 	if ((text == NULL) || (text[0] == 0))
 	{
 		return;
+	}
+
+	{
+		const char *body = smsTakeSenderTime(text, &newTime);
+
+		if (body != NULL)
+		{
+			text = body;
+		}
+		else
+		{
+			smsRadioTime(&newTime);
+		}
 	}
 
 	if (!smsStorageReadHeader(&header))
@@ -963,7 +1089,9 @@ static void smsStoreInboxMessage(uint32_t sourceId, const char *text)
 			uint32_t toAddress = (uint32_t)(baseAddress + ((uint32_t)(i - 1U) * sizeof(smsInboxMessage_t)));
 
 			if (!EEPROM_Read((int32_t)fromAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)) ||
-				!EEPROM_Write((int32_t)toAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)))
+				!EEPROM_Write((int32_t)toAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)) ||
+				!EEPROM_Read((int32_t)smsInboxTimeAddress(i), (uint8_t *)&shiftedTime, (int)sizeof(shiftedTime)) ||
+				!EEPROM_Write((int32_t)smsInboxTimeAddress((uint8_t)(i - 1U)), (uint8_t *)&shiftedTime, (int)sizeof(shiftedTime)))
 			{
 				return;
 			}
@@ -978,6 +1106,7 @@ static void smsStoreInboxMessage(uint32_t sourceId, const char *text)
 	newMessage.text[SMS_MAX_TEXT_LENGTH] = 0;
 
 	if (EEPROM_Write((int32_t)(baseAddress + ((uint32_t)writeIndex * sizeof(smsInboxMessage_t))), (uint8_t *)&newMessage, (int)sizeof(newMessage)) &&
+		EEPROM_Write((int32_t)smsInboxTimeAddress(writeIndex), (uint8_t *)&newTime, (int)sizeof(newTime)) &&
 		smsStorageWriteHeader(&header) &&
 		smsStorageUpdateChecksum())
 	{
@@ -3945,11 +4074,55 @@ bool smsGetInboxMessage(uint8_t index, smsInboxMessage_t *message)
 	return true;
 }
 
+bool smsGetInboxMessageTime(uint8_t index, smsMessageTime_t *messageTime)
+{
+	smsStorageHeader_t header;
+
+	if (messageTime == NULL)
+	{
+		return false;
+	}
+
+	memset(messageTime, 0, sizeof(*messageTime));
+	if (!smsStorageReadHeader(&header) || (index >= header.inboxCount) ||
+		!EEPROM_Read((int32_t)smsInboxTimeAddress(index), (uint8_t *)messageTime, (int)sizeof(*messageTime)))
+	{
+		return false;
+	}
+
+	if ((messageTime->source != SMS_TIME_SENDER) && (messageTime->source != SMS_TIME_RADIO))
+	{
+		memset(messageTime, 0, sizeof(*messageTime));
+	}
+
+	return true;
+}
+
+// "26/09 12:53" for a sender stamp, "~26/09 12:53" for this radio's own clock (approximate:
+// it depends on the clock having been set), "" when unknown.
+void smsFormatMessageTime(const smsMessageTime_t *messageTime, char *buffer, size_t bufferLength)
+{
+	if ((buffer == NULL) || (bufferLength == 0U))
+	{
+		return;
+	}
+
+	buffer[0] = 0;
+	if ((messageTime == NULL) || (messageTime->source == SMS_TIME_NONE))
+	{
+		return;
+	}
+
+	snprintf(buffer, bufferLength, "%s%02u/%02u %02u:%02u", ((messageTime->source == SMS_TIME_RADIO) ? "~" : ""),
+			messageTime->day, messageTime->month, messageTime->hour, messageTime->minute);
+}
+
 bool smsDeleteInboxMessage(uint8_t index)
 {
 	smsStorageHeader_t header;
 	smsInboxMessage_t shiftedMessage;
 	smsInboxMessage_t emptyMessage;
+	smsMessageTime_t shiftedTime;
 	uint32_t baseAddress = (uint32_t)(SMS_STORAGE_ADDRESS + offsetof(smsStorage_t, inboxMessages));
 
 	if (!smsStorageReadHeader(&header) || (index >= header.inboxCount))
@@ -3963,14 +4136,18 @@ bool smsDeleteInboxMessage(uint8_t index)
 		uint32_t toAddress = (uint32_t)(baseAddress + ((uint32_t)i * sizeof(smsInboxMessage_t)));
 
 		if (!EEPROM_Read((int32_t)fromAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)) ||
-			!EEPROM_Write((int32_t)toAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)))
+			!EEPROM_Write((int32_t)toAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)) ||
+			!EEPROM_Read((int32_t)smsInboxTimeAddress((uint8_t)(i + 1U)), (uint8_t *)&shiftedTime, (int)sizeof(shiftedTime)) ||
+			!EEPROM_Write((int32_t)smsInboxTimeAddress(i), (uint8_t *)&shiftedTime, (int)sizeof(shiftedTime)))
 		{
 			return false;
 		}
 	}
 
 	memset(&emptyMessage, 0, sizeof(emptyMessage));
-	if (!EEPROM_Write((int32_t)(baseAddress + ((uint32_t)(header.inboxCount - 1U) * sizeof(smsInboxMessage_t))), (uint8_t *)&emptyMessage, (int)sizeof(emptyMessage)))
+	memset(&shiftedTime, 0, sizeof(shiftedTime));
+	if (!EEPROM_Write((int32_t)(baseAddress + ((uint32_t)(header.inboxCount - 1U) * sizeof(smsInboxMessage_t))), (uint8_t *)&emptyMessage, (int)sizeof(emptyMessage)) ||
+		!EEPROM_Write((int32_t)smsInboxTimeAddress((uint8_t)(header.inboxCount - 1U)), (uint8_t *)&shiftedTime, (int)sizeof(shiftedTime)))
 	{
 		return false;
 	}

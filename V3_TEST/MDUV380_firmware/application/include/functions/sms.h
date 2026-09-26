@@ -29,6 +29,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #define SMS_MAX_TEXT_LENGTH           231U
 #define SMS_MAX_UTF16_PAYLOAD_BYTES  (SMS_MAX_TEXT_LENGTH * 2U)
@@ -121,6 +122,22 @@ typedef struct
 	char text[SMS_MAX_TEXT_LENGTH + 1U];
 } smsSentMessage_t;
 
+// When an inbox message was received, kept apart from smsInboxMessage_t so the stored message
+// layout (and existing inboxes) stay as they are. Only day/month/hour/minute: that's what is shown.
+#define SMS_TIME_NONE    0U  // unknown: no sender stamp and the radio clock looked unset
+#define SMS_TIME_SENDER  1U  // "[DD/MM HH:MM] " stamp at the start of the text (e.g. added by a web gateway), stripped
+#define SMS_TIME_RADIO   2U  // this radio's clock (local time zone) when the message arrived
+
+typedef struct
+{
+	uint8_t source;
+	uint8_t day;
+	uint8_t month;
+	uint8_t hour;
+	uint8_t minute;
+	uint8_t reserved[3];
+} smsMessageTime_t;
+
 typedef struct
 {
 	char title[SMS_QUICKTEXT_MAX_TITLE_LENGTH + 1U];
@@ -136,6 +153,8 @@ void smsClearQueuedMessage(void);
 bool smsHandleReceivedDataFrame(uint8_t dataType, const uint8_t *frame, uint8_t frameLength);
 uint8_t smsGetInboxCount(void);
 bool smsGetInboxMessage(uint8_t index, smsInboxMessage_t *message);
+bool smsGetInboxMessageTime(uint8_t index, smsMessageTime_t *messageTime);
+void smsFormatMessageTime(const smsMessageTime_t *messageTime, char *buffer, size_t bufferLength);
 bool smsDeleteInboxMessage(uint8_t index);
 void smsClearInbox(void);
 uint8_t smsGetSentCount(void);
