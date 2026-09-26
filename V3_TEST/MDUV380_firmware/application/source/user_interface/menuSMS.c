@@ -135,6 +135,7 @@ static smsViewSource_t smsViewSource = SMS_VIEW_SOURCE_RX_POPUP;
 static smsInboxMessage_t smsViewInboxMessage;
 static uint8_t smsViewMessageIndex = 0U;
 static char smsViewPeerText[24];
+static uint8_t smsViewSentStatus = 0U; // SMS_SENT_STATUS_* of the sent message on screen
 static char smsViewTimeText[16]; // when an inbox message arrived (see smsFormatMessageTime), "" if unknown
 static uint8_t smsViewTopLine = 0U;
 static bool smsComposeHasPreset = false;
@@ -519,6 +520,21 @@ static bool smsLoadSentViewMessage(uint8_t index)
 	smsViewTopLine = 0U;
 	snprintf(smsViewPeerText, sizeof(smsViewPeerText), "To: %u", message.destinationId);
 	smsViewTimeText[0] = 0;
+	smsViewSentStatus = SMS_SENT_STATUS_NONE;
+	{
+		smsSentInfo_t info;
+		char when[16];
+
+		if (smsGetSentMessageInfo(index, &info))
+		{
+			smsViewSentStatus = info.status;
+			smsFormatMessageTime(&info.time, when, sizeof(when));
+			if (when[0] != 0)
+			{
+				snprintf(smsViewPeerText, sizeof(smsViewPeerText), "To: %u %s", message.destinationId, when);
+			}
+		}
+	}
 	return true;
 }
 
@@ -896,7 +912,9 @@ static void smsViewRender(void)
 
 	displayClearBuf();
 	// The title shows when the message arrived, if known: the text itself no longer carries it.
-	menuDisplayTitle(((smsViewSource == SMS_VIEW_SOURCE_INBOX) && (smsViewTimeText[0] != 0)) ? smsViewTimeText : "SMS VIEW");
+	// Title: when an inbox message arrived, or what became of a sent one (DELIVERED, NO ACK...).
+	menuDisplayTitle((smsViewSource == SMS_VIEW_SOURCE_SENT) ? smsSentStatusName(smsViewSentStatus)
+			: ((smsViewTimeText[0] != 0) ? smsViewTimeText : "SMS VIEW"));
 	displayThemeApply(THEME_ITEM_FG_MENU_ITEM, THEME_ITEM_BG);
 	displayPrintAt(DISPLAY_X_POS_MENU_TEXT_OFFSET, DISPLAY_Y_POS_MENU_START, smsViewPeerText, FONT_SIZE_1);
 

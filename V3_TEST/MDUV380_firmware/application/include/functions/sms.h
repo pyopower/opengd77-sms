@@ -138,6 +138,21 @@ typedef struct
 	uint8_t reserved[3];
 } smsMessageTime_t;
 
+// What became of a sent message, kept apart from smsSentMessage_t like the inbox times.
+#define SMS_SENT_STATUS_NONE       0U  // unknown (sent before this was recorded)
+#define SMS_SENT_STATUS_SENT       1U  // transmitted, no acknowledgement asked ("Wait for ACK" off)
+#define SMS_SENT_STATUS_PENDING    2U  // transmitted, waiting for the recipient's ACK
+#define SMS_SENT_STATUS_DELIVERED  3U  // the recipient radio acknowledged it
+#define SMS_SENT_STATUS_NO_ACK     4U  // no acknowledgement before the timeout
+#define SMS_SENT_STATUS_FAILED     5U  // rejected, or no repeater/hotspot answered
+
+typedef struct
+{
+	smsMessageTime_t time; // this radio's clock when it was sent (SMS_TIME_RADIO or SMS_TIME_NONE)
+	uint8_t status;
+	uint8_t reserved[3];
+} smsSentInfo_t;
+
 typedef struct
 {
 	char title[SMS_QUICKTEXT_MAX_TITLE_LENGTH + 1U];
@@ -154,6 +169,8 @@ bool smsHandleReceivedDataFrame(uint8_t dataType, const uint8_t *frame, uint8_t 
 uint8_t smsGetInboxCount(void);
 bool smsGetInboxMessage(uint8_t index, smsInboxMessage_t *message);
 bool smsGetInboxMessageTime(uint8_t index, smsMessageTime_t *messageTime);
+bool smsGetSentMessageInfo(uint8_t index, smsSentInfo_t *info);
+const char *smsSentStatusName(uint8_t status);
 void smsFormatMessageTime(const smsMessageTime_t *messageTime, char *buffer, size_t bufferLength);
 bool smsDeleteInboxMessage(uint8_t index);
 void smsClearInbox(void);

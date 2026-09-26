@@ -47,7 +47,7 @@
 
 #define SMS_STORAGE_ADDRESS                    0x0F0000
 #define SMS_STORAGE_MAGIC                      0x534D5349U
-#define SMS_STORAGE_VERSION                    6U  // 6: + inboxTimes after the quick texts
+#define SMS_STORAGE_VERSION                    6U  // 6: + inboxTimes and sentInfos after the quick texts
 #define SMS_LEGACY_TEXT_LENGTH                 64U
 #define SMS_STORAGE_DEBOUNCE_MS                1500U
 #define SMS_TX_START_TIMEOUT_MS                4000U
@@ -81,6 +81,7 @@ typedef struct
 	smsSentMessage_t sentMessages[SMS_SENT_MAX_MESSAGES];
 	smsQuickTextMessage_t quickTextMessages[SMS_QUICKTEXT_MAX_MESSAGES];
 	smsMessageTime_t inboxTimes[SMS_INBOX_MAX_MESSAGES];
+	smsSentInfo_t sentInfos[SMS_SENT_MAX_MESSAGES];
 } smsStorage_t;
 
 typedef struct
@@ -344,9 +345,12 @@ static void smsResetOutgoingStartTracking(void)
 	memset(&outgoingStartTracking, 0, sizeof(outgoingStartTracking));
 }
 
+static uint32_t pendingTxEventDestination = 0U;
+
 static void smsSetPendingTxEvent(smsTxEvent_t event)
 {
 	pendingTxEvent = event;
+	pendingTxEventDestination = outgoingTracking.destinationId;
 }
 
 static uint32_t smsStorageChecksum(const smsStorage_t *storage)
@@ -968,14 +972,30 @@ static uint32_t smsInboxTimeAddress(uint8_t index)
 	return (uint32_t)(SMS_STORAGE_ADDRESS + offsetof(smsStorage_t, inboxTimes) + ((uint32_t)index * sizeof(smsMessageTime_t)));
 }
 
+static uint32_t smsSentInfoAddress(uint8_t index)
+{
+	return (uint32_t)(SMS_STORAGE_ADDRESS + offsetof(smsStorage_t, sentInfos) + ((uint32_t)index * sizeof(smsSentInfo_t)));
+}
+
+// Clears the inbox times and sent infos (both new in storage version 6).
 static bool smsStorageZeroInboxTimes(void)
 {
 	smsMessageTime_t emptyTime;
+	smsSentInfo_t emptyInfo;
 
 	memset(&emptyTime, 0, sizeof(emptyTime));
+	memset(&emptyInfo, 0, sizeof(emptyInfo));
 	for (uint8_t i = 0U; i < SMS_INBOX_MAX_MESSAGES; i++)
 	{
 		if (!EEPROM_Write((int32_t)smsInboxTimeAddress(i), (uint8_t *)&emptyTime, (int)sizeof(emptyTime)))
+		{
+			return false;
+		}
+	}
+
+	for (uint8_t i = 0U; i < SMS_SENT_MAX_MESSAGES; i++)
+	{
+		if (!EEPROM_Write((int32_t)smsSentInfoAddress(i), (uint8_t *)&emptyInfo, (int)sizeof(emptyInfo)))
 		{
 			return false;
 		}
@@ -1126,8 +1146,10 @@ static void smsStoreInboxMessage(uint32_t sourceId, const char *text)
 #endif
 }
 
-static void smsStoreSentMessageInternal(uint32_t destinationId, const char *text)
+static void smsStoreSentMessageInternal(uint32_t destinationId, const char *text, uint8_t status)
 {
+	smsSentInfo_t newInfo;
+	smsSentInfo_t shiftedInfo;
 	smsStorageHeader_t header;
 	smsSentMessage_t shiftedMessage;
 	smsSentMessage_t newMessage;
@@ -1162,7 +1184,9 @@ static void smsStoreSentMessageInternal(uint32_t destinationId, const char *text
 			uint32_t toAddress = (uint32_t)(baseAddress + ((uint32_t)(i - 1U) * sizeof(smsSentMessage_t)));
 
 			if (!EEPROM_Read((int32_t)fromAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)) ||
-				!EEPROM_Write((int32_t)toAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)))
+				!EEPROM_Write((int32_t)toAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)) ||
+				!EEPROM_Read((int32_t)smsSentInfoAddress(i), (uint8_t *)&shiftedInfo, (int)sizeof(shiftedInfo)) ||
+				!EEPROM_Write((int32_t)smsSentInfoAddress((uint8_t)(i - 1U)), (uint8_t *)&shiftedInfo, (int)sizeof(shiftedInfo)))
 			{
 				return;
 			}
@@ -1171,12 +1195,17 @@ static void smsStoreSentMessageInternal(uint32_t destinationId, const char *text
 		writeIndex = (uint8_t)(SMS_SENT_MAX_MESSAGES - 1U);
 	}
 
+	memset(&newInfo, 0, sizeof(newInfo));
+	smsRadioTime(&newInfo.time);
+	newInfo.status = status;
+
 	memset(&newMessage, 0, sizeof(newMessage));
 	newMessage.destinationId = destinationId;
 	strncpy(newMessage.text, text, SMS_MAX_TEXT_LENGTH);
 	newMessage.text[SMS_MAX_TEXT_LENGTH] = 0;
 
 	if (EEPROM_Write((int32_t)(baseAddress + ((uint32_t)writeIndex * sizeof(smsSentMessage_t))), (uint8_t *)&newMessage, (int)sizeof(newMessage)) &&
+		EEPROM_Write((int32_t)smsSentInfoAddress(writeIndex), (uint8_t *)&newInfo, (int)sizeof(newInfo)) &&
 		smsStorageWriteHeader(&header) &&
 		smsStorageUpdateChecksum())
 	{
@@ -3275,7 +3304,8 @@ static void smsProcessPendingOutgoingStart(void)
 
 		if (outgoingStartTracking.storeSent)
 		{
-			(void)smsStoreSentMessage(outgoingStartTracking.destinationId, outgoingStartTracking.text);
+			smsStoreSentMessageInternal(outgoingStartTracking.destinationId, outgoingStartTracking.text,
+				(outgoingStartTracking.waitForAck ? SMS_SENT_STATUS_PENDING : SMS_SENT_STATUS_SENT));
 		}
 
 		smsStartOutgoingTracking(outgoingStartTracking.destinationId,
@@ -3369,11 +3399,100 @@ bool smsRetryLastOutgoingMessage(void)
 		SMS_TX_EVENT_RETRYING);
 }
 
+// The newest sent message to destinationId still waiting for its ACK gets its final status.
+// Runs from smsConsumeTxEvent (main loop), not from where the ACK is detected: that can be
+// the HR-C6000 interrupt, and flash writes don't belong there.
+static void smsUpdatePendingSentStatus(uint32_t destinationId, uint8_t status)
+{
+	smsSentMessage_t message;
+	smsSentInfo_t info;
+
+	for (int i = (int)sentCount - 1; i >= 0; i--)
+	{
+		if (!smsGetSentMessage((uint8_t)i, &message) ||
+			!EEPROM_Read((int32_t)smsSentInfoAddress((uint8_t)i), (uint8_t *)&info, (int)sizeof(info)))
+		{
+			return;
+		}
+
+		if ((message.destinationId == destinationId) && (info.status == SMS_SENT_STATUS_PENDING))
+		{
+			info.status = status;
+			(void)(EEPROM_Write((int32_t)smsSentInfoAddress((uint8_t)i), (uint8_t *)&info, (int)sizeof(info)) &&
+				smsStorageUpdateChecksum());
+			return;
+		}
+	}
+}
+
 smsTxEvent_t smsConsumeTxEvent(void)
 {
 	smsTxEvent_t event = pendingTxEvent;
 	pendingTxEvent = SMS_TX_EVENT_NONE;
+
+	switch (event)
+	{
+		case SMS_TX_EVENT_ACK:
+			smsUpdatePendingSentStatus(pendingTxEventDestination, SMS_SENT_STATUS_DELIVERED);
+			break;
+		case SMS_TX_EVENT_TIMEOUT:
+			smsUpdatePendingSentStatus(pendingTxEventDestination, SMS_SENT_STATUS_NO_ACK);
+			break;
+		case SMS_TX_EVENT_REJECTED:
+		case SMS_TX_EVENT_NO_REPEATER:
+			smsUpdatePendingSentStatus(pendingTxEventDestination, SMS_SENT_STATUS_FAILED);
+			break;
+		default:
+			break;
+	}
+
 	return event;
+}
+
+bool smsGetSentMessageInfo(uint8_t index, smsSentInfo_t *info)
+{
+	if ((info == NULL) || (index >= sentCount))
+	{
+		return false;
+	}
+
+	memset(info, 0, sizeof(*info));
+	if (!EEPROM_Read((int32_t)smsSentInfoAddress(index), (uint8_t *)info, (int)sizeof(*info)))
+	{
+		return false;
+	}
+
+	if (info->status > SMS_SENT_STATUS_FAILED)
+	{
+		memset(info, 0, sizeof(*info));
+	}
+
+	// Still "waiting" but nothing is being tracked any more (e.g. the radio was switched off
+	// before the ACK or the timeout): it was never confirmed.
+	if ((info->status == SMS_SENT_STATUS_PENDING) && !outgoingTracking.active)
+	{
+		info->status = SMS_SENT_STATUS_NO_ACK;
+	}
+
+	if ((info->time.source != SMS_TIME_RADIO) && (info->time.source != SMS_TIME_SENDER))
+	{
+		memset(&info->time, 0, sizeof(info->time));
+	}
+
+	return true;
+}
+
+const char *smsSentStatusName(uint8_t status)
+{
+	switch (status)
+	{
+		case SMS_SENT_STATUS_SENT:      return "SENT";
+		case SMS_SENT_STATUS_PENDING:   return "WAITING ACK";
+		case SMS_SENT_STATUS_DELIVERED: return "DELIVERED";
+		case SMS_SENT_STATUS_NO_ACK:    return "NO ACK";
+		case SMS_SENT_STATUS_FAILED:    return "FAILED";
+		default:                        return "SMS VIEW";
+	}
 }
 
 static bool smsDecodeCurrentRxBuffers(const uint8_t *payload, uint16_t totalLength, uint8_t padOctets, uint32_t sourceId)
@@ -4227,7 +4346,7 @@ bool smsStoreSentMessage(uint32_t destinationId, const char *text)
 		return false;
 	}
 
-	smsStoreSentMessageInternal(destinationId, text);
+	smsStoreSentMessageInternal(destinationId, text, SMS_SENT_STATUS_SENT);
 	return true;
 }
 
@@ -4236,6 +4355,7 @@ bool smsDeleteSentMessage(uint8_t index)
 	smsStorageHeader_t header;
 	smsSentMessage_t shiftedMessage;
 	smsSentMessage_t emptyMessage;
+	smsSentInfo_t shiftedInfo;
 	uint32_t baseAddress = (uint32_t)(SMS_STORAGE_ADDRESS + offsetof(smsStorage_t, sentMessages));
 
 	if (!smsStorageReadHeader(&header) || (index >= header.sentCount))
@@ -4249,14 +4369,18 @@ bool smsDeleteSentMessage(uint8_t index)
 		uint32_t toAddress = (uint32_t)(baseAddress + ((uint32_t)i * sizeof(smsSentMessage_t)));
 
 		if (!EEPROM_Read((int32_t)fromAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)) ||
-			!EEPROM_Write((int32_t)toAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)))
+			!EEPROM_Write((int32_t)toAddress, (uint8_t *)&shiftedMessage, (int)sizeof(shiftedMessage)) ||
+			!EEPROM_Read((int32_t)smsSentInfoAddress((uint8_t)(i + 1U)), (uint8_t *)&shiftedInfo, (int)sizeof(shiftedInfo)) ||
+			!EEPROM_Write((int32_t)smsSentInfoAddress(i), (uint8_t *)&shiftedInfo, (int)sizeof(shiftedInfo)))
 		{
 			return false;
 		}
 	}
 
 	memset(&emptyMessage, 0, sizeof(emptyMessage));
-	if (!EEPROM_Write((int32_t)(baseAddress + ((uint32_t)(header.sentCount - 1U) * sizeof(smsSentMessage_t))), (uint8_t *)&emptyMessage, (int)sizeof(emptyMessage)))
+	memset(&shiftedInfo, 0, sizeof(shiftedInfo));
+	if (!EEPROM_Write((int32_t)(baseAddress + ((uint32_t)(header.sentCount - 1U) * sizeof(smsSentMessage_t))), (uint8_t *)&emptyMessage, (int)sizeof(emptyMessage)) ||
+		!EEPROM_Write((int32_t)smsSentInfoAddress((uint8_t)(header.sentCount - 1U)), (uint8_t *)&shiftedInfo, (int)sizeof(shiftedInfo)))
 	{
 		return false;
 	}
