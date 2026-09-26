@@ -144,6 +144,11 @@ static void updateScreen(bool isFirstRun)
 					menuName = "SMS options";
 					customString = true;
 				}
+				else if (menuDataGlobal.currentMenuList[mNum].menuNum == MENU_SMS_MENU)
+				{
+					menuName = "SMS";
+					customString = true;
+				}
 
 				menuDisplayEntry(i, mNum, menuName, 0, THEME_ITEM_FG_MENU_ITEM, THEME_ITEM_COLOUR_NONE, THEME_ITEM_BG);
 

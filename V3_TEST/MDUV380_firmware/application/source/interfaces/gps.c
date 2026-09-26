@@ -48,8 +48,8 @@ static
 #endif
   uint8_t NMEARecordingBuffer[LOG_RAM_BUF_SIZE];
 
-#define LOG_FLASH_16MB_START_ADDRESS  (14 * 1024 * 1024) // Last 2MB
-#define LOG_FLASH_16MB_MEM_SIZE        (2 * 1024 * 1024)
+#define LOG_FLASH_16MB_START_ADDRESS  (14 * 1024 * 1024) // Last 2MB...
+#define LOG_FLASH_16MB_MEM_SIZE        ((2 * 1024 * 1024) - (64 * 1024)) // ...but the last 64 KB, the SMS store (sms.c)
 #if defined(CPU_MK22FN512VLL12)
 #define LOG_FLASH_2MB_START_ADDRESS    (1 * 1024 * 1024) // Last 1MB
 #define LOG_FLASH_2MB_MEM_SIZE         (1 * 1024 * 1024)

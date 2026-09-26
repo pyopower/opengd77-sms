@@ -45,13 +45,14 @@
 #include "usb/usb_com.h"
 #endif
 
-// Where the SMS store lives. 0x0F0000 (used until now) is inside the second area of the DMR ID
-// database (DMRID_MEMORY_LOCATION_2 = 0xB8000 up to 1 MB, also the GPS log on 1 MB flashes): saving
-// SMS overwrote contacts there, and uploading the database wiped the inbox. On the 16 MB flash of
-// the STM32 radios OpenGD77 only uses the first MB (and the GPS log the last 2 MB), so the store
-// moves to 8 MB there; a store found at the old address is copied over once (see smsStorageLoad).
+// Where the SMS store lives. 0x0F0000 (used until now) is inside the DMR ID database: its second
+// area starts at DMRID_MEMORY_LOCATION_2 (0xB8000 + 128 KB on STM32) and, with a full worldwide list
+// on a 16 MB flash, runs on for megabytes (295245 IDs x 33 bytes reach ~9.9 MB, seen on an MD-UV380).
+// Saving SMS overwrote contacts there, and uploading the database wiped the inbox. The only part of
+// the flash no CPS upload ever writes is the GPS log (last 2 MB, gps.c), so the store takes its last
+// 64 KB, which the log gives up. A store found at the old address is copied over once.
 #define SMS_STORAGE_ADDRESS_LEGACY             0x0F0000U
-#define SMS_STORAGE_ADDRESS_16MB               0x800000U
+#define SMS_STORAGE_ADDRESS_16MB               0xFF0000U  // 16 MB - 64 KB
 #define SMS_FLASH_PART_16MB                    0x4018U   // 25Q128, see SPI_Flash_init()
 extern uint32_t flashChipPartNumber;
 static uint32_t smsStorageAddress = SMS_STORAGE_ADDRESS_LEGACY;

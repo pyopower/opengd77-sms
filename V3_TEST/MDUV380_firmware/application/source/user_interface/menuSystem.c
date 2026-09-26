@@ -669,6 +669,7 @@ const menuItemNewData_t mainMenuItems[] =
 {
 	{   3, MENU_ZONE_LIST       },
 	{   6, MENU_CONTACTS_MENU   },
+	{   9, MENU_SMS_MENU        }, // named "SMS" in menuDisplayMenuList.c (no such entry in the language tables)
 	{  12, MENU_CHANNEL_DETAILS },
 	{   4, MENU_RSSI_SCREEN     },
 	{   8, MENU_FIRMWARE_INFO   },
