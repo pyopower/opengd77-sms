@@ -45,7 +45,17 @@
 #include "usb/usb_com.h"
 #endif
 
-#define SMS_STORAGE_ADDRESS                    0x0F0000
+// Where the SMS store lives. 0x0F0000 (used until now) is inside the second area of the DMR ID
+// database (DMRID_MEMORY_LOCATION_2 = 0xB8000 up to 1 MB, also the GPS log on 1 MB flashes): saving
+// SMS overwrote contacts there, and uploading the database wiped the inbox. On the 16 MB flash of
+// the STM32 radios OpenGD77 only uses the first MB (and the GPS log the last 2 MB), so the store
+// moves to 8 MB there; a store found at the old address is copied over once (see smsStorageLoad).
+#define SMS_STORAGE_ADDRESS_LEGACY             0x0F0000U
+#define SMS_STORAGE_ADDRESS_16MB               0x800000U
+#define SMS_FLASH_PART_16MB                    0x4018U   // 25Q128, see SPI_Flash_init()
+extern uint32_t flashChipPartNumber;
+static uint32_t smsStorageAddress = SMS_STORAGE_ADDRESS_LEGACY;
+#define SMS_STORAGE_ADDRESS                    smsStorageAddress
 #define SMS_STORAGE_MAGIC                      0x534D5349U
 #define SMS_STORAGE_VERSION                    6U  // 6: + inboxTimes and sentInfos after the quick texts
 #define SMS_LEGACY_TEXT_LENGTH                 64U
@@ -283,6 +293,7 @@ static void smsStorageBuildSnapshot(smsStorage_t *storage);
 static bool smsStoragePersist(void);
 static void smsStorageLoad(void);
 static bool smsStorageZeroInboxTimes(void);
+static void smsStorageMoveFromLegacyAddress(void);
 static bool smsShouldAckUndecodedPayload(const uint8_t *payload, uint16_t totalLength, uint8_t padOctets);
 static bool smsDecodeCurrentRxBuffers(const uint8_t *payload, uint16_t totalLength, uint8_t padOctets, uint32_t sourceId);
 static void smsProcessPendingRxDecode(void);
@@ -315,6 +326,47 @@ static void smsDebugPrintHex(const char *label, const uint8_t *data, uint16_t le
 }
 #endif
 
+// One-off move of an existing store from the old address (inside the DMR ID database area) to the
+// new one: only when the new place holds no store and the old one does (any version the loader can
+// migrate). The old area is only read, never written again, so the ID database isn't touched further.
+static void smsStorageMoveFromLegacyAddress(void)
+{
+	smsStorageHeader_t header;
+	uint8_t chunk[256];
+
+	if (smsStorageAddress == SMS_STORAGE_ADDRESS_LEGACY)
+	{
+		return;
+	}
+
+	if (EEPROM_Read((int32_t)smsStorageAddress, (uint8_t *)&header, (int)sizeof(header)) && (header.magic == SMS_STORAGE_MAGIC))
+	{
+		return; // already there
+	}
+
+	if (!EEPROM_Read((int32_t)SMS_STORAGE_ADDRESS_LEGACY, (uint8_t *)&header, (int)sizeof(header)) ||
+		(header.magic != SMS_STORAGE_MAGIC) || (header.version < 1U) || (header.version > SMS_STORAGE_VERSION))
+	{
+		return; // nothing to move (or not ours: the ID database lives there)
+	}
+
+	for (uint32_t offset = 0U; offset < (uint32_t)sizeof(smsStorage_t); offset += (uint32_t)sizeof(chunk))
+	{
+		uint32_t length = (uint32_t)sizeof(chunk);
+
+		if ((offset + length) > (uint32_t)sizeof(smsStorage_t))
+		{
+			length = (uint32_t)sizeof(smsStorage_t) - offset;
+		}
+
+		if (!EEPROM_Read((int32_t)(SMS_STORAGE_ADDRESS_LEGACY + offset), chunk, (int)length) ||
+			!EEPROM_Write((int32_t)(smsStorageAddress + offset), chunk, (int)length))
+		{
+			return; // smsStorageLoad() then finds no valid store and starts empty
+		}
+	}
+}
+
 void smsInit(void)
 {
 	memset(&queuedMessage, 0, sizeof(queuedMessage));
@@ -332,6 +384,8 @@ void smsInit(void)
 	pendingTxEvent = SMS_TX_EVENT_NONE;
 	smsStorageDirty = false;
 	smsStorageDirtySinceTick = 0U;
+	smsStorageAddress = ((flashChipPartNumber == SMS_FLASH_PART_16MB) ? SMS_STORAGE_ADDRESS_16MB : SMS_STORAGE_ADDRESS_LEGACY);
+	smsStorageMoveFromLegacyAddress();
 	smsStorageLoad();
 }
 
