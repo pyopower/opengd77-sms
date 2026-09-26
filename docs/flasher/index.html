@@ -50,6 +50,7 @@
 <h2 data-i18n="s3"></h2>
 <p class="hint" data-i18n-html="dfu_hint"></p>
 <button id="go" disabled data-i18n="go"></button>
+<p class="hint" id="why" style="color:var(--warn)"></p>
 <progress id="prog" class="hide" max="1" value="0"></progress>
 <div id="res"></div>
 
@@ -73,6 +74,7 @@ var I = {
   donor_ok: "✔ Correct donor file.", donor_bad: "✖ This is not the MD-9600 V26.45 file (checksum mismatch).",
   s3: "3. Radio in bootloader mode",
   dfu_hint: "Radio off, USB cable connected. Hold <b>PTT</b> and the <b>upper side button</b> and switch the radio on: the LED blinks red/green. Then press the button below and pick <i>Digital Radio in USB mode</i> (0483:DF11).",
+  why: "To enable the button: ", why_agree: "accept the notice above", why_donor: "choose the donor file (step 2)", why_fw: "wait for the firmware list to load (or reload the page)", why_usb: "use a browser with WebUSB",
   go: "Flash", connecting: "Connecting to the radio...", prep: "Preparing the image...",
   erasing: "Erasing...", writing: "Writing {pct}%...",
   done: "✔ Done. The radio restarts with opengd77-sms {ver}. Check the version in the firmware info screen.",
@@ -95,6 +97,7 @@ var I = {
   donor_ok: "✔ Fichero donante correcto.", donor_bad: "✖ No es el fichero del MD-9600 V26.45 (la suma de comprobación no coincide).",
   s3: "3. Radio en modo cargador",
   dfu_hint: "Radio apagada y con el cable USB conectado. Mantén pulsados el <b>PTT</b> y el <b>botón lateral superior</b> y enciéndela: el LED parpadea rojo y verde. Pulsa el botón de abajo y elige <i>Digital Radio in USB mode</i> (0483:DF11).",
+  why: "Para activar el botón: ", why_agree: "acepta el aviso de arriba", why_donor: "elige el fichero donante (paso 2)", why_fw: "espera a que cargue la lista de firmwares (o recarga la página)", why_usb: "usa un navegador con WebUSB",
   go: "Flashear", connecting: "Conectando con la radio...", prep: "Preparando la imagen...",
   erasing: "Borrando...", writing: "Escribiendo {pct}%...",
   done: "✔ Hecho. La radio se reinicia con opengd77-sms {ver}. Comprueba la versión en la pantalla de información del firmware.",
@@ -117,6 +120,7 @@ var I = {
   donor_ok: "✔ Ficheiro dador correto.", donor_bad: "✖ Não é o ficheiro do MD-9600 V26.45 (a soma de verificação não coincide).",
   s3: "3. Rádio em modo bootloader",
   dfu_hint: "Rádio desligado, com o cabo USB ligado. Mantém premidos o <b>PTT</b> e o <b>botão lateral superior</b> e liga o rádio: o LED pisca vermelho e verde. Depois carrega no botão abaixo e escolhe <i>Digital Radio in USB mode</i> (0483:DF11).",
+  why: "Para ativar o botão: ", why_agree: "aceita o aviso acima", why_donor: "escolhe o ficheiro dador (passo 2)", why_fw: "espera que a lista de firmwares carregue (ou recarrega a página)", why_usb: "usa um navegador com WebUSB",
   go: "Gravar", connecting: "A ligar ao rádio...", prep: "A preparar a imagem...",
   erasing: "A apagar...", writing: "A escrever {pct}%...",
   done: "✔ Feito. O rádio reinicia com o opengd77-sms {ver}. Verifica a versão no ecrã de informação do firmware.",
@@ -139,6 +143,7 @@ var I = {
   donor_ok: "✔ File donatore corretto.", donor_bad: "✖ Non è il file dell'MD-9600 V26.45 (checksum diverso).",
   s3: "3. Radio in modalità bootloader",
   dfu_hint: "Radio spenta, cavo USB collegato. Tieni premuti il <b>PTT</b> e il <b>tasto laterale superiore</b> e accendi la radio: il LED lampeggia rosso e verde. Poi premi il pulsante qui sotto e scegli <i>Digital Radio in USB mode</i> (0483:DF11).",
+  why: "Per attivare il pulsante: ", why_agree: "accetta l'avviso qui sopra", why_donor: "scegli il file donatore (passo 2)", why_fw: "attendi il caricamento dell'elenco dei firmware (o ricarica la pagina)", why_usb: "usa un browser con WebUSB",
   go: "Scrivi il firmware", connecting: "Connessione alla radio...", prep: "Preparazione dell'immagine...",
   erasing: "Cancellazione...", writing: "Scrittura {pct}%...",
   done: "✔ Fatto. La radio si riavvia con opengd77-sms {ver}. Controlla la versione nella schermata delle informazioni del firmware.",
@@ -161,6 +166,7 @@ var I = {
   donor_ok: "✔ Fichier donneur correct.", donor_bad: "✖ Ce n'est pas le fichier du MD-9600 V26.45 (somme de contrôle différente).",
   s3: "3. Radio en mode bootloader",
   dfu_hint: "Radio éteinte, câble USB branché. Maintiens le <b>PTT</b> et le <b>bouton latéral supérieur</b> et allume la radio : la LED clignote rouge et vert. Puis appuie sur le bouton ci-dessous et choisis <i>Digital Radio in USB mode</i> (0483:DF11).",
+  why: "Pour activer le bouton : ", why_agree: "accepte l'avertissement ci-dessus", why_donor: "choisis le fichier donneur (étape 2)", why_fw: "attends le chargement de la liste des firmwares (ou recharge la page)", why_usb: "utilise un navigateur avec WebUSB",
   go: "Flasher", connecting: "Connexion à la radio...", prep: "Préparation de l'image...",
   erasing: "Effacement...", writing: "Écriture {pct} %...",
   done: "✔ Terminé. La radio redémarre avec opengd77-sms {ver}. Vérifie la version dans l'écran d'informations du firmware.",
@@ -179,13 +185,17 @@ function applyLang(l){ L=I[l]?l:"en"; document.documentElement.lang=L; $("lang")
   try{localStorage.setItem("og77sms_lang",L);}catch(e){} }
 var l0=null; try{l0=localStorage.getItem("og77sms_lang");}catch(e){}
 applyLang(l0 || (navigator.language||"en").slice(0,2).toLowerCase());
-$("lang").onchange=function(){ applyLang(this.value); };
+$("lang").onchange=function(){ applyLang(this.value); ready(); };
 Object.keys(MODELS).forEach(function(k){ var o=document.createElement("option"); o.value=k; o.textContent=k; $("model").appendChild(o); });
 function res(ok,txt){ $("res").className="res "+(ok?"ok":"bad"); $("res").textContent=txt; }
-function ready(){ $("go").disabled = !($("agree").checked && donor && manifest && navigator.usb); }
+function ready(){
+  var miss=[]; if(!navigator.usb) miss.push(T("why_usb")); if(!$("agree").checked) miss.push(T("why_agree"));
+  if(!donor) miss.push(T("why_donor")); if(!manifest) miss.push(T("why_fw"));
+  $("go").disabled = miss.length>0; $("why").textContent = miss.length ? T("why")+miss.join(" \u00b7 ") : ""; }
 $("model").onchange=function(){ $("untested").classList.toggle("hide", MODELS[this.value].tested); };
 $("agree").onchange=ready;
 if (!navigator.usb) $("nousb").classList.remove("hide");
+ready();
 fetch("firmware/manifest.json",{cache:"no-store"}).then(function(r){return r.json();}).then(function(m){
   manifest=m; $("ver").textContent=m.version+" ("+m.commit+")"; ready(); });
 $("donor").onchange=async function(){
